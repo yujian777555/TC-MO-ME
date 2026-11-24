@@ -15,6 +15,12 @@ https://github.com/stonybrooknlp/appworld.git
 uv sync --frozen --extra benchmark
 ```
 
+## 兼容性约束
+
+首次 CI 在 Pydantic 2.14.4 下进入 `appworld install` 前失败，错误为 `TypeError: match_type() takes 2 positional arguments but 3 were given`。固定 rev 的 `appworld/common/datetime.py` 将 `GenerateSchema.match_type` 补丁为旧签名 `(self, obj)`，而 Pydantic 2.14 的签名已变为 `(self, obj, origin)`。
+
+项目因此将 Pydantic 约束为 `>=2.12,<2.14`，仍使用 Pydantic v2。本地只改变该依赖后，Pydantic 2.13.5 下 `import appworld` 成功。这是针对导入兼容性的最小修正，不代表 AppWorld 任务校验已通过；完整结果以 CI 为准。
+
 ## 官方初始化与校验命令
 
 独立环境任务准备数据时，依次执行：

@@ -5,7 +5,7 @@ description = "Reproducible infrastructure for TC-MO-ME experiments"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic>=2.12,<3",
+    "pydantic>=2.12,<2.14",
     "pyyaml>=6.0,<7",
 ]
 
