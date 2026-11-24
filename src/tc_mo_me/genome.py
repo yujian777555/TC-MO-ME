@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
-from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from datetime import datetime, timedelta
-from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+
+from tc_mo_me.model import UsageRecord
 
 GENOME_SCHEMA_VERSION = "0.1"
 MAX_WORKFLOW_NODES = 64
@@ -159,30 +158,6 @@ def genome_hash(genome: Genome | Mapping[str, Any] | str | bytes) -> str:
     return hashlib.sha256(canonical_genome_bytes(genome)).hexdigest()
 
 
-class UsageRecord(StrictModel):
-    model_id: str = Field(min_length=1)
-    model_version: str | None = None
-    price_id: str | None = None
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
-    total_tokens: int = Field(ge=0)
-    call_count: int = Field(ge=0)
-    retry_count: int = Field(ge=0)
-    elapsed_seconds: float = Field(ge=0)
-    cost: Decimal | None = None
-    cost_basis: str = Field(default="unknown", min_length=1)
-
-    @model_validator(mode="after")
-    def validate_usage(self) -> UsageRecord:
-        if self.total_tokens != self.input_tokens + self.output_tokens:
-            raise ValueError("total_tokens must equal input_tokens plus output_tokens")
-        if self.cost is None and self.cost_basis != "unknown":
-            raise ValueError("Unknown cost requires cost_basis='unknown'")
-        if self.cost is not None and self.cost_basis == "unknown":
-            raise ValueError("Unknown cost must use cost=None, not a numeric value")
-        return self
-
-
 class LineageRecord(StrictModel):
     operator_id: str = Field(min_length=1)
     parent_ids: list[str] = Field(min_length=1)
@@ -194,7 +169,6 @@ class LineageRecord(StrictModel):
     child_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     generation: int = Field(ge=1)
     usage: UsageRecord
-    cost: Decimal | None
     created_at_utc: datetime
 
     @model_validator(mode="after")
@@ -222,8 +196,6 @@ class LineageRecord(StrictModel):
         for parent_id, parent_hash in self.parent_hashes.items():
             if not _is_sha256(parent_hash):
                 raise ValueError(f"parent_hashes[{parent_id!r}] must be a SHA256 hex digest")
-        if self.cost != self.usage.cost:
-            raise ValueError("Lineage cost must match usage.cost")
         if self.created_at_utc.utcoffset() != timedelta(0):
             raise ValueError("created_at_utc must include the UTC timezone")
         return self
@@ -231,144 +203,3 @@ class LineageRecord(StrictModel):
 
 def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
-
-
-class ModelRequest(StrictModel):
-    model_id: str = Field(min_length=1)
-    prompt: str = Field(min_length=1)
-    system_prompt: str | None = None
-    temperature: float = Field(default=0.0, ge=0, le=2)
-    max_output_tokens: int | None = Field(default=None, ge=1)
-    metadata: Metadata = Field(default_factory=dict)
-
-
-class ModelResponse(StrictModel):
-    text: str
-    model_id: str = Field(min_length=1)
-    model_version: str | None = None
-    usage: UsageRecord
-    provider_response_id: str | None = None
-    finish_reason: str | None = None
-
-
-class ModelAdapter(ABC):
-    @abstractmethod
-    def generate(self, request: ModelRequest) -> ModelResponse:
-        raise NotImplementedError
-
-
-class MockModelAdapter(ModelAdapter):
-    def __init__(
-        self,
-        response_text: str = "",
-        *,
-        responses: Mapping[str, str] | None = None,
-        model_version: str | None = "mock-v1",
-        price_id: str | None = None,
-    ) -> None:
-        self._response_text = response_text
-        self._responses = dict(responses or {})
-        self._model_version = model_version
-        self._price_id = price_id
-
-    def generate(self, request: ModelRequest) -> ModelResponse:
-        text = self._responses.get(request.prompt, self._response_text)
-        input_tokens = len(request.prompt.split())
-        if request.system_prompt is not None:
-            input_tokens += len(request.system_prompt.split())
-        output_tokens = len(text.split())
-        usage = UsageRecord(
-            model_id=request.model_id,
-            model_version=self._model_version,
-            price_id=self._price_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=input_tokens + output_tokens,
-            call_count=1,
-            retry_count=0,
-            elapsed_seconds=0.0,
-            cost=None,
-            cost_basis="unknown",
-        )
-        return ModelResponse(
-            text=text,
-            model_id=request.model_id,
-            model_version=self._model_version,
-            usage=usage,
-            finish_reason="stop",
-        )
-
-
-class OpenAICompatibleModelAdapter(ModelAdapter):
-    def __init__(
-        self,
-        *,
-        base_url: str | None = None,
-        api_key: str | None = None,
-        model_version: str | None = None,
-        price_id: str | None = None,
-        timeout_seconds: float = 60.0,
-        client: Any | None = None,
-    ) -> None:
-        if client is None:
-            if api_key is None:
-                raise ValueError("api_key is required when no client is supplied")
-            try:
-                from openai import OpenAI
-            except ImportError as error:
-                raise RuntimeError("Install the 'api' extra to use OpenAI-compatible models") from error
-            client = OpenAI(
-                base_url=base_url,
-                api_key=api_key,
-                timeout=timeout_seconds,
-                max_retries=0,
-            )
-        self._client = client
-        self._model_version = model_version
-        self._price_id = price_id
-
-    def generate(self, request: ModelRequest) -> ModelResponse:
-        messages = []
-        if request.system_prompt is not None:
-            messages.append({"role": "system", "content": request.system_prompt})
-        messages.append({"role": "user", "content": request.prompt})
-        kwargs = {
-            "model": request.model_id,
-            "messages": messages,
-            "temperature": request.temperature,
-        }
-        if request.max_output_tokens is not None:
-            kwargs["max_tokens"] = request.max_output_tokens
-
-        started = time.perf_counter()
-        raw_response = self._client.chat.completions.create(**kwargs)
-        elapsed_seconds = time.perf_counter() - started
-        if raw_response.usage is None:
-            raise ValueError("OpenAI-compatible response must include token usage")
-
-        raw_usage = raw_response.usage
-        provider_cost = getattr(raw_usage, "cost", None)
-        cost = None if provider_cost is None else Decimal(str(provider_cost))
-        cost_basis = "unknown" if provider_cost is None else "provider_reported"
-        usage = UsageRecord(
-            model_id=raw_response.model,
-            model_version=raw_response.system_fingerprint or self._model_version,
-            price_id=self._price_id,
-            input_tokens=raw_usage.prompt_tokens,
-            output_tokens=raw_usage.completion_tokens,
-            total_tokens=raw_usage.total_tokens,
-            call_count=1,
-            retry_count=0,
-            elapsed_seconds=elapsed_seconds,
-            cost=cost,
-            cost_basis=cost_basis,
-        )
-        choice = raw_response.choices[0]
-        return ModelResponse(
-            text=choice.message.content or "",
-            model_id=raw_response.model,
-            model_version=raw_response.system_fingerprint or self._model_version,
-            usage=usage,
-            provider_response_id=raw_response.id,
-            finish_reason=choice.finish_reason,
-        )

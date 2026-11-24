@@ -3,11 +3,11 @@ import importlib
 import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta, timezone
-from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
+
+from tc_mo_me.model import CostBasis, UsageRecord
 
 COMPONENT_NAMES = (
     "system_prompt",
@@ -201,14 +201,14 @@ def usage_data(**overrides):
         "model_id": "test-model",
         "model_version": "test-model-2026-01",
         "price_id": "price-v1",
-        "input_tokens": 11,
-        "output_tokens": 7,
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
         "total_tokens": 18,
-        "call_count": 2,
-        "retry_count": 1,
+        "calls": 2,
+        "retries": 1,
         "elapsed_seconds": 0.25,
-        "cost": None,
-        "cost_basis": "unknown",
+        "api_cost": None,
+        "cost_basis": CostBasis.UNKNOWN,
     }
     data.update(overrides)
     return data
@@ -227,41 +227,11 @@ def lineage_data(api, **overrides):
         "parent_hashes": {"parent": api.genome_hash(parent)},
         "child_hash": api.genome_hash(child),
         "generation": 1,
-        "usage": api.UsageRecord(**usage_data()),
-        "cost": None,
+        "usage": UsageRecord(**usage_data()),
         "created_at_utc": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
     }
     data.update(overrides)
     return data
-
-
-def test_usage_record_distinguishes_provenance_and_unknown_cost(api):
-    usage = api.UsageRecord(**usage_data())
-
-    assert usage.model_id == "test-model"
-    assert usage.model_version == "test-model-2026-01"
-    assert usage.price_id == "price-v1"
-    assert usage.total_tokens == 18
-    assert usage.call_count == 2
-    assert usage.retry_count == 1
-    assert usage.elapsed_seconds == 0.25
-    assert usage.cost is None
-    assert usage.cost_basis == "unknown"
-
-
-def test_unknown_cost_cannot_be_recorded_as_zero(api):
-    with pytest.raises(ValueError, match="cost|unknown"):
-        api.UsageRecord(**usage_data(cost=Decimal("0"), cost_basis="unknown"))
-
-    known_free_call = api.UsageRecord(
-        **usage_data(cost=Decimal("0"), cost_basis="provider_reported")
-    )
-    assert known_free_call.cost == Decimal("0")
-
-
-def test_usage_record_validates_token_totals(api):
-    with pytest.raises(ValueError, match="total_tokens"):
-        api.UsageRecord(**usage_data(total_tokens=99))
 
 
 def test_lineage_records_complete_parent_child_relationship(api):
@@ -276,10 +246,29 @@ def test_lineage_records_complete_parent_child_relationship(api):
     assert len(record.parent_hashes["parent"]) == 64
     assert len(record.child_hash) == 64
     assert record.generation == 1
-    assert record.usage.cost is None
-    assert record.cost is None
+    assert record.usage.api_cost is None
+    assert record.usage.cost_basis is CostBasis.UNKNOWN
     assert record.created_at_utc.utcoffset() == timedelta(0)
     assert api.LineageRecord.model_validate_json(record.model_dump_json()) == record
+
+
+def test_lineage_uses_canonical_model_usage_without_duplicate_interfaces(api):
+    record = api.LineageRecord(**lineage_data(api))
+
+    assert api.LineageRecord.model_fields["usage"].annotation is UsageRecord
+    assert "cost" not in api.LineageRecord.model_fields
+    assert record.usage.model_id == "test-model"
+    assert record.usage.api_cost is None
+    assert record.usage.cost_basis is CostBasis.UNKNOWN
+    assert api.UsageRecord is UsageRecord
+    for interface_name in (
+        "ModelRequest",
+        "ModelResponse",
+        "ModelAdapter",
+        "MockModelAdapter",
+        "OpenAICompatibleModelAdapter",
+    ):
+        assert not hasattr(api, interface_name)
 
 
 @pytest.mark.parametrize(
@@ -299,7 +288,6 @@ def test_lineage_records_complete_parent_child_relationship(api):
         ({"parent_hashes": {"parent": "not-a-hash"}}, "parent_hashes|SHA|hash"),
         ({"child_hash": "not-a-hash"}, "child_hash|SHA|hash"),
         ({"generation": 0}, "generation"),
-        ({"cost": Decimal("0")}, "cost|usage"),
         ({"created_at_utc": datetime(2026, 1, 2)}, "UTC|timezone"),
         (
             {"created_at_utc": datetime(2026, 1, 2, tzinfo=timezone(timedelta(hours=8)))},
@@ -312,124 +300,6 @@ def test_invalid_lineage_records_are_rejected(api, overrides, match):
 
     with pytest.raises(ValueError, match=match):
         api.LineageRecord(**data)
-
-
-def model_request(api, **overrides):
-    data = {
-        "model_id": "mock-model",
-        "system_prompt": "Be precise.",
-        "prompt": "Return a plan",
-        "temperature": 0.0,
-        "max_output_tokens": 32,
-    }
-    data.update(overrides)
-    return api.ModelRequest(**data)
-
-
-def test_mock_adapter_is_deterministic_and_has_unknown_cost(api):
-    adapter = api.MockModelAdapter(
-        response_text="fallback", responses={"Return a plan": "1. inspect"}, model_version="mock-v1"
-    )
-    request = model_request(api)
-
-    first = adapter.generate(request)
-    second = adapter.generate(request)
-
-    assert isinstance(adapter, api.ModelAdapter)
-    assert first == second
-    assert first.text == "1. inspect"
-    assert first.model_id == "mock-model"
-    assert first.model_version == "mock-v1"
-    assert first.usage.input_tokens == 5
-    assert first.usage.output_tokens == 2
-    assert first.usage.total_tokens == 7
-    assert first.usage.call_count == 1
-    assert first.usage.retry_count == 0
-    assert first.usage.elapsed_seconds == 0
-    assert first.usage.cost is None
-    assert first.usage.cost_basis == "unknown"
-
-
-def test_mock_adapter_uses_deterministic_fallback(api):
-    adapter = api.MockModelAdapter(response_text="fallback")
-
-    response = adapter.generate(model_request(api, prompt="Unmapped prompt"))
-
-    assert response.text == "fallback"
-
-
-class FakeCompletions:
-    def __init__(self):
-        self.kwargs = None
-
-    def create(self, **kwargs):
-        self.kwargs = kwargs
-        return SimpleNamespace(
-            id="response-123",
-            model="mock-model",
-            system_fingerprint="fp-test",
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content="generated text"), finish_reason="stop"
-                )
-            ],
-            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=3, total_tokens=15),
-        )
-
-
-class FakeClient:
-    def __init__(self):
-        self.completions = FakeCompletions()
-        self.chat = SimpleNamespace(completions=self.completions)
-
-
-def test_openai_compatible_adapter_maps_request_response_without_network(api):
-    client = FakeClient()
-    adapter = api.OpenAICompatibleModelAdapter(
-        client=client, model_version="fallback-version", price_id="price-v2"
-    )
-
-    response = adapter.generate(model_request(api))
-
-    assert client.completions.kwargs == {
-        "model": "mock-model",
-        "messages": [
-            {"role": "system", "content": "Be precise."},
-            {"role": "user", "content": "Return a plan"},
-        ],
-        "temperature": 0.0,
-        "max_tokens": 32,
-    }
-    assert response.text == "generated text"
-    assert response.model_id == "mock-model"
-    assert response.model_version == "fp-test"
-    assert response.provider_response_id == "response-123"
-    assert response.finish_reason == "stop"
-    assert response.usage.input_tokens == 12
-    assert response.usage.output_tokens == 3
-    assert response.usage.total_tokens == 15
-    assert response.usage.price_id == "price-v2"
-    assert response.usage.cost is None
-    assert response.usage.cost_basis == "unknown"
-    assert response.usage.call_count == 1
-    assert response.usage.retry_count == 0
-    assert response.usage.elapsed_seconds >= 0
-
-
-def test_openai_compatible_adapter_requires_token_usage(api):
-    client = FakeClient()
-
-    class NoUsageCompletions(FakeCompletions):
-        def create(self, **kwargs):
-            response = super().create(**kwargs)
-            response.usage = None
-            return response
-
-    client.chat = SimpleNamespace(completions=NoUsageCompletions())
-    adapter = api.OpenAICompatibleModelAdapter(client=client)
-
-    with pytest.raises(ValueError, match="usage|token"):
-        adapter.generate(model_request(api))
 
 
 def load_initial_genomes(api):
