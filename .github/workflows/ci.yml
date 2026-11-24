@@ -55,7 +55,6 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}/.local/appworld_compat
       PYTHONUTF8: "1"
       NO_PROXY: non-existent-server.com
-      no_proxy: non-existent-server.com
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
