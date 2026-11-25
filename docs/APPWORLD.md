@@ -80,9 +80,10 @@ elapsed_seconds=51.330
 
 - `src/tc_mo_me/environments/base.py`：Environment、Observation、Evaluation 接口类型。
 - `src/tc_mo_me/environments/appworld_env.py`：延迟导入、seed/timeout 透传、唯一默认 experiment_name、reset 前关闭旧 world、同名任务输出拒绝覆盖、执行/评分/轨迹和幂等 close。
-- `tests/test_appworld_integration.py`：先失败再实现的 9 个适配器测试；当前主工作区全量项目测试为 115 个。
-- `pyproject.toml`、`uv.lock`：benchmark extra 固定 `fastapi>=0.110,<0.151`，frozen clean sync 实际解析为 0.150.0。
+- `tests/test_appworld_integration.py`：覆盖适配器生命周期、非法路径和输出防逃逸；完整项目测试数以 `STATUS.md` 的最终验收记录为准。
+- `pyproject.toml`、`uv.lock`：benchmark extra 固定 FastAPI、SQLModel 和 SQLAlchemy 兼容范围，frozen sync 直接得到已实测版本，不再事后降级。
 - `configs/e0/appworld_verify.yaml`：固定 rev、数据、FastAPI 与其他兼容版本、单进程三任务、seed、超时和零模型调用配置。
-- `.github/workflows/ci.yml`：仅 AppWorld job 增加 LFS 固定源码重装、兼容适配、官方 tests、显式数据版本与单进程三任务；tests/tasks 分别设 20/10 分钟超时。未推送，不宣称远端 CI 已运行或通过。
+- `.github/workflows/ci.yml`：AppWorld job 包含 LFS 固定源码重装、兼容适配、完整官方 tests、显式数据版本与单进程三任务；tests/tasks 分别设 20/10 分钟超时。
+- 远端 CI 已在提交 `a8a41c6c159d6647a15c5a675ef83b01866a51f0` 的 [run 45561814592](https://github.com/yujian777555/TC-MO-ME/actions/runs/45561814592) 全部通过，包括 AppWorld、三平台项目测试、构建和全历史 secret scan。后续提交仍需重新验收，不能沿用该链接冒充其 CI 状态。
 
-九项候选的文档调研与实测边界见 [benchmark_selection.md](benchmark_selection.md)。ToolSandbox 备选固定为 `c8571d7854316d2e1c5f288e59fe1e34e53f6dd1`，仅验证官方远端 HEAD，未安装或运行。
+两个候选的九项核查维度与实测边界见 [benchmark_selection.md](benchmark_selection.md)。ToolSandbox 备选固定为 `c8571d7854316d2e1c5f288e59fe1e34e53f6dd1`，仅验证官方远端 HEAD，未安装或运行。
