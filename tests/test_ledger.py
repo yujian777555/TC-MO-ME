@@ -29,6 +29,12 @@ def usage_record(
     model_id: str = "model-a",
     model_version: str | None = "v1",
     price_id: str | None = "price-a",
+    phase: str | None = "generation",
+    prompt_tokens: int | None = 3,
+    completion_tokens: int | None = 2,
+    total_tokens: int | None = 5,
+    calls: int = 1,
+    retries: int = 0,
     cost_basis: CostBasis = CostBasis.ACTUAL,
     api_cost: Decimal | None = Decimal("0.25"),
 ) -> UsageRecord:
@@ -36,11 +42,12 @@ def usage_record(
         model_id=model_id,
         model_version=model_version,
         price_id=price_id,
-        prompt_tokens=3,
-        completion_tokens=2,
-        total_tokens=5,
-        calls=1,
-        retries=0,
+        phase=phase,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        calls=calls,
+        retries=retries,
         elapsed_seconds=1.5,
         api_cost=api_cost,
         cost_basis=cost_basis,
@@ -61,11 +68,11 @@ def episode_data() -> dict[str, object]:
         "model_version": "v1",
         "environment_seed": 7,
         "model_seed_supported": True,
-        "input_tokens": 3,
-        "output_tokens": 2,
-        "api_calls": 1,
+        "input_tokens": 6,
+        "output_tokens": 4,
+        "api_calls": 2,
         "retry_count": 0,
-        "api_cost": Decimal("0.25"),
+        "api_cost": Decimal("0.30"),
         "wall_time": 1.5,
         "task_score": 0.0,
         "run_status": "succeeded",
@@ -79,7 +86,10 @@ def episode_data() -> dict[str, object]:
         "execution_time": 1.5,
         "timestamp_utc": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
         "artifact_hashes": {"answer.py": ARTIFACT_HASH},
-        "usage_records": [usage_record()],
+        "usage_records": [
+            usage_record(),
+            usage_record(phase="evaluation", api_cost=Decimal("0.05")),
+        ],
     }
 
 
@@ -150,9 +160,12 @@ def test_score_zero_and_unknown_scores_survive_failed_statuses_and_json() -> Non
         episode_id="generation-failed",
         run_status="generation_failed",
         task_score=None,
+        input_tokens=3,
+        output_tokens=2,
+        api_calls=1,
         api_cost=None,
         generation_cost=None,
-        evaluation_cost=None,
+        evaluation_cost=Decimal("0"),
         total_cost=None,
         usage_records=[
             usage_record(cost_basis=CostBasis.UNKNOWN, api_cost=None),
@@ -174,29 +187,79 @@ def test_usage_records_with_different_models_versions_and_prices_are_not_merged(
     records = [
         usage_record(),
         usage_record(model_version="v2", price_id="price-b", api_cost=Decimal("0.5")),
-        usage_record(model_id="model-b", price_id=None, api_cost=Decimal("0.75")),
+        usage_record(
+            model_id="model-b",
+            price_id=None,
+            phase="evaluation",
+            api_cost=Decimal("0.75"),
+        ),
     ]
     data = episode_data()
-    data["usage_records"] = records
+    data.update(
+        input_tokens=9,
+        output_tokens=6,
+        api_calls=3,
+        api_cost=Decimal("1.50"),
+        generation_cost=Decimal("0.75"),
+        evaluation_cost=Decimal("0.75"),
+        total_cost=Decimal("1.50"),
+        usage_records=records,
+    )
 
     episode = EpisodeRecord.model_validate(data)
 
     assert len(episode.usage_records) == 3
     assert list(episode.usage_records) == records
-    assert len(
-        {
-            (item.model_id, item.model_version, item.price_id)
-            for item in episode.usage_records
-        }
-    ) == 3
+    assert (
+        len({(item.model_id, item.model_version, item.price_id) for item in episode.usage_records})
+        == 3
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("api_calls", 3),
+        ("retry_count", 1),
+        ("input_tokens", 7),
+        ("output_tokens", 5),
+        ("api_cost", Decimal("0.31")),
+    ],
+)
+def test_episode_totals_must_match_usage_records(field: str, value: object) -> None:
+    data = episode_data()
+    data[field] = value
+
+    with pytest.raises(ValidationError, match=field):
+        EpisodeRecord.model_validate(data)
+
+
+def test_unknown_usage_tokens_require_unknown_episode_totals() -> None:
+    data = episode_data()
+    data.update(
+        input_tokens=None,
+        usage_records=[
+            usage_record(prompt_tokens=None, total_tokens=None),
+            usage_record(phase="evaluation", api_cost=Decimal("0.05")),
+        ],
+    )
+
+    episode = EpisodeRecord.model_validate(data)
+
+    assert episode.input_tokens is None
+    assert episode.output_tokens == 4
+
+    data["input_tokens"] = 0
+    with pytest.raises(ValidationError, match="input_tokens"):
+        EpisodeRecord.model_validate(data)
 
 
 def test_any_unknown_cost_makes_total_unknown_and_incomplete() -> None:
     data = episode_data()
     data.update(
         api_cost=None,
-        generation_cost=Decimal("0.25"),
-        evaluation_cost=None,
+        generation_cost=None,
+        evaluation_cost=Decimal("0"),
         total_cost=None,
         usage_records=[
             usage_record(),
@@ -221,6 +284,7 @@ def test_complete_cost_is_summed_and_basis_is_conservative() -> None:
     data.pop("total_cost")
     data["usage_records"] = [
         usage_record(cost_basis=CostBasis.ESTIMATED, api_cost=Decimal("0.25")),
+        usage_record(phase="evaluation", api_cost=Decimal("0.05")),
     ]
 
     episode = EpisodeRecord.model_validate(data)
@@ -232,6 +296,113 @@ def test_complete_cost_is_summed_and_basis_is_conservative() -> None:
     dumped = json.loads(episode.model_dump_json())
     assert dumped["total_cost"] == "0.30"
     assert dumped["cost_complete"] is True
+
+
+def test_missing_usage_phase_prevents_cost_completeness() -> None:
+    data = episode_data()
+    data.update(
+        total_cost=None,
+        usage_records=[
+            usage_record(phase=None),
+            usage_record(phase="evaluation", api_cost=Decimal("0.05")),
+        ],
+    )
+
+    episode = EpisodeRecord.model_validate(data)
+
+    assert episode.cost_complete is False
+    assert episode.cost_basis is CostBasis.UNKNOWN
+    assert episode.total_cost is None
+
+    data["cost_complete"] = True
+    with pytest.raises(ValidationError, match="cost_complete"):
+        EpisodeRecord.model_validate(data)
+
+
+@pytest.mark.parametrize("phase", ["generation", "evaluation"])
+def test_phase_costs_must_match_usage_records(phase: str) -> None:
+    data = episode_data()
+    data.update(
+        generation_cost=Decimal("0.26") if phase == "generation" else Decimal("0.25"),
+        evaluation_cost=Decimal("0.06") if phase == "evaluation" else Decimal("0.05"),
+        total_cost=Decimal("0.31"),
+    )
+
+    with pytest.raises(ValidationError, match=f"{phase}_cost"):
+        EpisodeRecord.model_validate(data)
+
+
+def test_model_calls_without_usage_reject_zero_cost_completeness() -> None:
+    data = episode_data()
+    data.update(
+        input_tokens=0,
+        output_tokens=0,
+        api_cost=Decimal("0"),
+        generation_cost=Decimal("0"),
+        evaluation_cost=Decimal("0"),
+        total_cost=Decimal("0"),
+        usage_records=[],
+        cost_complete=True,
+        cost_basis=CostBasis.ACTUAL,
+    )
+
+    with pytest.raises(ValidationError, match="usage_records"):
+        EpisodeRecord.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["input_tokens", "output_tokens", "api_cost", "generation_cost", "evaluation_cost"],
+)
+def test_model_calls_without_usage_require_unknown_aggregates(field: str) -> None:
+    data = episode_data()
+    data.update(
+        input_tokens=None,
+        output_tokens=None,
+        api_cost=None,
+        generation_cost=None,
+        evaluation_cost=None,
+        total_cost=None,
+        usage_records=[],
+    )
+
+    episode = EpisodeRecord.model_validate(data)
+
+    assert episode.cost_complete is False
+    assert episode.cost_basis is CostBasis.UNKNOWN
+    assert episode.total_cost is None
+
+    data[field] = Decimal("0") if "cost" in field else 0
+    with pytest.raises(ValidationError, match=field):
+        EpisodeRecord.model_validate(data)
+
+
+def test_offline_zero_cost_requires_explicit_cost_basis() -> None:
+    data = episode_data()
+    data.update(
+        model_version=None,
+        input_tokens=0,
+        output_tokens=0,
+        api_calls=0,
+        retry_count=0,
+        api_cost=Decimal("0"),
+        generation_cost=Decimal("0"),
+        evaluation_cost=Decimal("0"),
+        total_cost=Decimal("0"),
+        usage_records=[],
+        cost_complete=True,
+        cost_basis=CostBasis.ACTUAL,
+    )
+
+    offline = EpisodeRecord.model_validate(data)
+
+    assert offline.cost_complete is True
+    assert offline.cost_basis is CostBasis.ACTUAL
+    assert offline.total_cost == Decimal("0")
+
+    data["cost_basis"] = CostBasis.UNKNOWN
+    with pytest.raises(ValidationError, match="cost_basis"):
+        EpisodeRecord.model_validate(data)
 
 
 def run_provenance() -> RunProvenance:
@@ -349,6 +520,79 @@ def test_run_ledger_deduplicates_across_reopen_without_rewriting_history(
     assert reopened.episodes_path.read_bytes() == original_bytes
 
 
+def test_run_ledger_reopen_ignores_provenance_capture_timestamp(tmp_path: Path) -> None:
+    RunLedger(tmp_path / "results", "run-1", provenance=run_provenance())
+    recaptured = run_provenance().model_copy(
+        update={"captured_at_utc": datetime(2027, 2, 3, 4, 5, 6, tzinfo=UTC)}
+    )
+
+    reopened = RunLedger(
+        tmp_path / "results",
+        "run-1",
+        provenance=recaptured,
+        allow_existing=True,
+    )
+
+    assert reopened.provenance is not None
+    assert reopened.provenance.model_dump(exclude={"captured_at_utc"}) == (
+        run_provenance().model_dump(exclude={"captured_at_utc"})
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"git_sha": "f" * 40},
+        {"config_hash": "f" * 64},
+        {"git_dirty": True, "development_mode": True},
+        {"development_mode": True},
+    ],
+)
+def test_run_ledger_reopen_rejects_provenance_identity_mismatch(
+    tmp_path: Path,
+    overrides: dict[str, object],
+) -> None:
+    RunLedger(tmp_path / "results", "run-1", provenance=run_provenance())
+    changed = run_provenance().model_copy(update=overrides)
+
+    with pytest.raises(ValueError, match="provenance"):
+        RunLedger(
+            tmp_path / "results",
+            "run-1",
+            provenance=changed,
+            allow_existing=True,
+        )
+
+
+def test_run_ledger_reopen_rejects_new_provenance_for_unprovenanced_run(
+    tmp_path: Path,
+) -> None:
+    RunLedger(tmp_path / "results", "run-1")
+
+    with pytest.raises(ValueError, match="provenance"):
+        RunLedger(
+            tmp_path / "results",
+            "run-1",
+            provenance=run_provenance(),
+            allow_existing=True,
+        )
+
+
+@pytest.mark.parametrize("field", ["git_sha", "config_hash"])
+def test_run_ledger_reopen_validates_existing_episodes_against_manifest(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    ledger = RunLedger(tmp_path / "results", "run-1", provenance=run_provenance())
+    ledger.append(EpisodeRecord.model_validate(episode_data()))
+    manifest = json.loads(ledger.manifest_path.read_text(encoding="utf-8"))
+    manifest["provenance"][field] = "f" * 40 if field == "git_sha" else "f" * 64
+    ledger.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=field):
+        RunLedger(tmp_path / "results", "run-1", allow_existing=True)
+
+
 def test_run_ledger_preserves_failed_records_and_zero_or_null_scores(tmp_path: Path) -> None:
     ledger = RunLedger(tmp_path / "results", "run-1", provenance=run_provenance())
     failed_data = episode_data()
@@ -397,6 +641,55 @@ def test_run_ledger_updates_manifest_by_atomic_replace(
     assert list(ledger.run_dir.glob("*.tmp")) == []
 
 
+def test_run_ledger_reopen_atomically_repairs_stale_episode_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = RunLedger(tmp_path / "results", "run-1", provenance=run_provenance())
+    episode = EpisodeRecord.model_validate(episode_data())
+    original_manifest = ledger.manifest_path.read_bytes()
+    real_replace = os.replace
+
+    def failing_replace(source: str | Path, destination: str | Path) -> None:
+        raise OSError("injected manifest replace failure")
+
+    monkeypatch.setattr("tc_mo_me.ledger.os.replace", failing_replace)
+    with pytest.raises(OSError, match="injected"):
+        ledger.append(episode)
+
+    episodes_bytes = ledger.episodes_path.read_bytes()
+    assert len(episodes_bytes.splitlines()) == 1
+    assert ledger.manifest_path.read_bytes() == original_manifest
+    assert list(ledger.run_dir.glob("*.tmp")) == []
+
+    with pytest.raises(OSError, match="injected"):
+        RunLedger(tmp_path / "results", "run-1", allow_existing=True)
+
+    assert ledger.episodes_path.read_bytes() == episodes_bytes
+    assert ledger.manifest_path.read_bytes() == original_manifest
+    assert list(ledger.run_dir.glob("*.tmp")) == []
+
+    replace_calls: list[tuple[Path, Path]] = []
+
+    def recording_replace(source: str | Path, destination: str | Path) -> None:
+        replace_calls.append((Path(source), Path(destination)))
+        real_replace(source, destination)
+
+    monkeypatch.setattr("tc_mo_me.ledger.os.replace", recording_replace)
+    reopened = RunLedger(tmp_path / "results", "run-1", allow_existing=True)
+
+    repaired_manifest = json.loads(reopened.manifest_path.read_text(encoding="utf-8"))
+    assert repaired_manifest["episode_count"] == 1
+    assert reopened.episodes_path.read_bytes() == episodes_bytes
+    assert replace_calls[-1][0].parent == reopened.run_dir
+    assert replace_calls[-1][1] == reopened.manifest_path
+    assert list(reopened.run_dir.glob("*.tmp")) == []
+
+    with pytest.raises(DuplicateEpisodeError):
+        reopened.append(episode)
+    assert reopened.episodes_path.read_bytes() == episodes_bytes
+
+
 def test_run_ledger_rejects_episode_from_another_run(tmp_path: Path) -> None:
     ledger = RunLedger(tmp_path / "results", "run-1", provenance=run_provenance())
     data = episode_data()
@@ -405,6 +698,23 @@ def test_run_ledger_rejects_episode_from_another_run(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="run_id"):
         ledger.append(EpisodeRecord.model_validate(data))
     assert ledger.episodes_path.read_bytes() == b""
+
+
+@pytest.mark.parametrize("field", ["git_sha", "config_hash"])
+def test_run_ledger_rejects_episode_provenance_mismatch(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    ledger = RunLedger(tmp_path / "results", "run-1", provenance=run_provenance())
+    data = episode_data()
+    data[field] = "f" * 40 if field == "git_sha" else "f" * 64
+
+    with pytest.raises(ValueError, match=field):
+        ledger.append(EpisodeRecord.model_validate(data))
+
+    assert ledger.episodes_path.read_bytes() == b""
+    manifest = json.loads(ledger.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["episode_count"] == 0
 
 
 def test_trajectory_requires_strictly_increasing_steps() -> None:

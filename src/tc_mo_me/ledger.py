@@ -108,11 +108,114 @@ class EpisodeRecord(BaseModel):
         if self.parent_ids and self.parent_id not in self.parent_ids:
             raise ValueError("parent_id must identify one primary parent in parent_ids")
 
+        empty_usage = not self.usage_records
+        offline_zero = (
+            empty_usage
+            and self.api_calls == 0
+            and self.retry_count == 0
+            and self.input_tokens == 0
+            and self.output_tokens == 0
+            and self.api_cost == 0
+            and self.generation_cost == 0
+            and self.evaluation_cost == 0
+            and self.total_cost == 0
+        )
+        if (
+            empty_usage
+            and self.api_calls > 0
+            and (
+                self.cost_complete
+                or self.cost_basis is not CostBasis.UNKNOWN
+                or self.total_cost is not None
+            )
+        ):
+            raise ValueError("usage_records are required to complete model-call costs")
+        if empty_usage and self.api_calls > 0:
+            for field in (
+                "input_tokens",
+                "output_tokens",
+                "api_cost",
+                "generation_cost",
+                "evaluation_cost",
+            ):
+                if getattr(self, field) is not None:
+                    raise ValueError(f"{field} must be null without usage_records")
+        if offline_zero and self.cost_basis is CostBasis.UNKNOWN:
+            raise ValueError("offline zero-cost records require an explicit cost_basis")
+
+        if self.usage_records:
+            known_cost = all(
+                usage.api_cost is not None and usage.cost_basis is not CostBasis.UNKNOWN
+                for usage in self.usage_records
+            )
+            expected_totals = {
+                "api_calls": sum(usage.calls for usage in self.usage_records),
+                "retry_count": sum(usage.retries for usage in self.usage_records),
+                "input_tokens": (
+                    None
+                    if any(usage.prompt_tokens is None for usage in self.usage_records)
+                    else sum(
+                        usage.prompt_tokens
+                        for usage in self.usage_records
+                        if usage.prompt_tokens is not None
+                    )
+                ),
+                "output_tokens": (
+                    None
+                    if any(usage.completion_tokens is None for usage in self.usage_records)
+                    else sum(
+                        usage.completion_tokens
+                        for usage in self.usage_records
+                        if usage.completion_tokens is not None
+                    )
+                ),
+                "api_cost": (
+                    sum(
+                        (
+                            usage.api_cost
+                            for usage in self.usage_records
+                            if usage.api_cost is not None
+                        ),
+                        Decimal(0),
+                    )
+                    if known_cost
+                    else None
+                ),
+            }
+            for field, expected in expected_totals.items():
+                if getattr(self, field) != expected:
+                    raise ValueError(f"{field} must equal the sum of usage_records")
+
+            if all(usage.phase is not None for usage in self.usage_records):
+                for phase in ("generation", "evaluation"):
+                    phase_records = [usage for usage in self.usage_records if usage.phase == phase]
+                    phase_cost_known = all(
+                        usage.api_cost is not None and usage.cost_basis is not CostBasis.UNKNOWN
+                        for usage in phase_records
+                    )
+                    expected_phase_cost = (
+                        sum(
+                            (
+                                usage.api_cost
+                                for usage in phase_records
+                                if usage.api_cost is not None
+                            ),
+                            Decimal(0),
+                        )
+                        if phase_cost_known
+                        else None
+                    )
+                    if getattr(self, f"{phase}_cost") != expected_phase_cost:
+                        raise ValueError(f"{phase}_cost must equal its usage_records sum")
+
         complete = (
-            self.generation_cost is not None
+            (not empty_usage or offline_zero)
+            and self.generation_cost is not None
             and self.evaluation_cost is not None
             and all(
-                usage.api_cost is not None and usage.cost_basis is not CostBasis.UNKNOWN
+                usage.api_cost is not None
+                and usage.cost_basis is not CostBasis.UNKNOWN
+                and usage.phase is not None
                 for usage in self.usage_records
             )
         )
@@ -152,7 +255,9 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
     temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
     try:
         with temporary.open("x", encoding="utf-8", newline="\n") as destination:
-            json.dump(payload, destination, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            json.dump(
+                payload, destination, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
             destination.write("\n")
             destination.flush()
             os.fsync(destination.fileno())
@@ -193,9 +298,7 @@ class RunLedger:
             "created_at_utc": datetime.now(UTC).isoformat(),
             "episodes_file": self.episodes_path.name,
             "episode_count": 0,
-            "provenance": (
-                provenance.model_dump(mode="json") if provenance is not None else None
-            ),
+            "provenance": (provenance.model_dump(mode="json") if provenance is not None else None),
         }
         _atomic_write_json(self.manifest_path, self._manifest)
 
@@ -205,24 +308,36 @@ class RunLedger:
         self._manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         if self._manifest.get("run_id") != self.run_id:
             raise ValueError("manifest run_id does not match the requested run")
+        raw_provenance = self._manifest.get("provenance")
+        manifest_provenance = (
+            RunProvenance.model_validate_json(json.dumps(raw_provenance))
+            if raw_provenance is not None
+            else None
+        )
         if self.provenance is None:
-            raw_provenance = self._manifest.get("provenance")
-            if raw_provenance is not None:
-                self.provenance = RunProvenance.model_validate_json(
-                    json.dumps(raw_provenance)
-                )
+            self.provenance = manifest_provenance
+        elif manifest_provenance is None or any(
+            getattr(self.provenance, field) != getattr(manifest_provenance, field)
+            for field in ("git_sha", "config_hash", "git_dirty", "development_mode")
+        ):
+            raise ValueError("provided provenance does not match the manifest")
+
         episodes = self._read_episodes_unlocked()
         self._episode_ids = {episode.episode_id for episode in episodes}
         if len(self._episode_ids) != len(episodes):
             raise ValueError("episodes.jsonl contains duplicate episode_id values")
+        if manifest_provenance is not None:
+            for episode in episodes:
+                for field in ("git_sha", "config_hash"):
+                    if getattr(episode, field) != getattr(manifest_provenance, field):
+                        raise ValueError(f"episode {field} does not match manifest provenance")
+        if self._manifest.get("episode_count") != len(episodes):
+            self._manifest["episode_count"] = len(episodes)
+            _atomic_write_json(self.manifest_path, self._manifest)
 
     def _read_episodes_unlocked(self) -> list[EpisodeRecord]:
         with self.episodes_path.open("r", encoding="utf-8") as source:
-            return [
-                EpisodeRecord.model_validate_json(line)
-                for line in source
-                if line.strip()
-            ]
+            return [EpisodeRecord.model_validate_json(line) for line in source if line.strip()]
 
     def read_episodes(self) -> list[EpisodeRecord]:
         with self._lock:
@@ -231,6 +346,10 @@ class RunLedger:
     def append(self, episode: EpisodeRecord) -> None:
         if episode.run_id != self.run_id:
             raise ValueError("episode run_id does not match this ledger")
+        if self.provenance is not None:
+            for field in ("git_sha", "config_hash"):
+                if getattr(episode, field) != getattr(self.provenance, field):
+                    raise ValueError(f"episode {field} does not match ledger provenance")
         serialized = episode.model_dump_json()
         with self._lock:
             if episode.episode_id in self._episode_ids:
