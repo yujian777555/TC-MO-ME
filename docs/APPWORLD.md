@@ -84,6 +84,6 @@ elapsed_seconds=51.330
 - `pyproject.toml`、`uv.lock`：benchmark extra 固定 FastAPI、SQLModel 和 SQLAlchemy 兼容范围，frozen sync 直接得到已实测版本，不再事后降级。
 - `configs/e0/appworld_verify.yaml`：固定 rev、数据、FastAPI 与其他兼容版本、单进程三任务、seed、超时和零模型调用配置。
 - `.github/workflows/ci.yml`：AppWorld job 包含 LFS 固定源码重装、兼容适配、完整官方 tests、显式数据版本与单进程三任务；tests/tasks 分别设 20/10 分钟超时。
-- 最终代码验收提交 `9b8b27f0b086115cdb10d34ef00f089505d0233a` 的 [run 45571352088](https://github.com/yujian777555/TC-MO-ME/actions/runs/45571352088) 全部通过，包括 AppWorld、三平台项目测试、构建和全历史 secret scan。后续代码变更仍需重新验收。
+- 最终提交 `509a7e016974bd2ba447b0a866b0d0f1953c015f` 的 [run 45613358196](https://github.com/yujian777555/TC-MO-ME/actions/runs/45613358196) 全部通过，包括 AppWorld、三平台项目测试、构建和全历史 secret scan。后续代码变更仍需重新验收。
 
 两个候选的九项核查维度与实测边界见 [benchmark_selection.md](benchmark_selection.md)。ToolSandbox 备选固定为 `c8571d7854316d2e1c5f288e59fe1e34e53f6dd1`，仅验证官方远端 HEAD，未安装或运行。

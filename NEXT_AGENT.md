@@ -11,7 +11,7 @@
 - main 起始 SHA：`a73bc1abcdd0d73e084b615fe9046fa38ded59a5`
 - 最终代码验收 SHA：`d12c414`；接管时必须以 `git rev-parse HEAD` 和 PR 最新提交为准。
 - 草稿 PR：https://github.com/yujian777555/TC-MO-ME/pull/1
-- 当前 `385 passed`、Ruff 通过；最终 CI 以 PR 最新 run 为准。
+- 当前 `385 passed`、Ruff 通过；最终提交 509a7e0 的 [CI run 45613358196](https://github.com/yujian777555/TC-MO-ME/actions/runs/45613358196) 已全绿。
 
 ## 首先完成的工作
 
