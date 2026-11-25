@@ -200,3 +200,13 @@ O3 组合规则修复后，v2 使用协议 `1.1`、plan SHA-256 `7dc3253f4102ac0
 主工作区实际结果：112/112 succeeded，64 parent controls + 48 children，16 states，176 events，364 Mock calls，6976 输入 tokens、2108 输出 tokens，全部成本完整且总成本 `0 USD`。O3 为 16/16 成功；逐条解析私有 lineage 确认 16 个 child 都使用四个父代，且 child hash 不在任何 parent hash 集合中，结构性 `no_change=0`。
 
 v1 的 112 条记录及 8 个失败保持不变，v2 使用独立原始目录 `results/raw/e1-mock-dry-run-v2/`。公开索引现保留 v1/v2 全部元数据。v2 仍是 synthetic Mock 设计验证，不是实际 AppWorld 状态解析、真实 E1 样本或算子效果证据。
+
+## 最终硬故障与事件语义复验
+
+最终审查后，AgentRunner 增加真实 Windows spawn `os._exit`、模型挂起硬超时和 generation_failed+close 失败回归；E1 增加 21 组事件身份/依赖负例。修复后干净隔离环境为 `383 passed`，Ruff 与 wheel 构建通过。
+
+真实 AppWorld 使用新 run_id `e0-appworld-mock-smoke-v2`、干净 SHA `b1f560d95009e531f43b91cb4970532ce1308117` 重跑三任务，仍为 3 Episodes/9 Mock calls、官方分数 `0/0/0`、成本 `0 USD`，成本完整且失败全部保留。原 v1 未修改。
+
+E1 使用新 run_id `e1-mock-dry-run-v3`、干净 SHA `243880c1a4c2613a85301b165a41031d4d55bc08` 正式执行：112/112 succeeded，O3 16/16，364 Mock calls，全部成本完整且为 `0 USD`。176 个事件严格分为 64 `parent_evaluated`、16 `pre_child_state_serialized`、48 `child_generated` 和 48 `child_evaluated`；全成功运行没有 `child_finalized`。逐条 lineage 复核仍确认 16 个 O3 child 均使用四父代且不是父代复制。
+
+`child_finalized` 仅用于未实际评价的 generation_failed 终态；v1 中的旧式 `child_evaluated` 终止包装只作 legacy 解释，原始 raw 不回写。v1/v2/v3 原始目录均保留，公开索引累计 342 条唯一元数据。上述运行仍不构成真实 E1 或算子效果证据。

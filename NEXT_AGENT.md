@@ -9,14 +9,14 @@
 - 仓库：`https://github.com/yujian777555/TC-MO-ME`
 - 分支：`experiment/e0-bootstrap`；不得直接推 main。
 - main 起始 SHA：`a73bc1abcdd0d73e084b615fe9046fa38ded59a5`
-- 最终代码验收 SHA：`9b8b27f0b086115cdb10d34ef00f089505d0233a`；接管时必须以 `git rev-parse HEAD` 和 PR 最新提交为准。
+- 最终代码验收 SHA：`fc34fc8`；接管时必须以 `git rev-parse HEAD` 和 PR 最新提交为准。
 - 草稿 PR：https://github.com/yujian777555/TC-MO-ME/pull/1
-- 当前 `352 passed`、Ruff 通过；代码验收提交的 [CI run 45571352088](https://github.com/yujian777555/TC-MO-ME/actions/runs/45571352088) 已全绿。
+- 当前 `383 passed`、Ruff 通过；最终 CI 以 PR 最新 run 为准。
 
 ## 首先完成的工作
 
-1. v2 已完成：112/112 succeeded、16 states、176 events、364 Mock calls，16 个 O3 child 均与全部父代不同。v1 的 8 个 O3 `generation_failed` 和 v2 的原始记录均不得删除或覆盖。
-2. 最终 pytest、Ruff、build、干净 frozen 安装和 CI 均已通过；如需修改代码，必须重新运行完整回归，不能沿用旧 CI。
+1. v3 已完成：112/112 succeeded、16 states、176 events、364 Mock calls，16 个 O3 child 均与全部父代不同，事件依赖和终态语义已严格验证。v1 的 8 个 O3 `generation_failed` 及 v1/v2/v3 原始记录均不得删除或覆盖。
+2. 最终 pytest、Ruff、build、干净 frozen 安装已完成；最新 CI 以 PR 为准。如需修改代码，必须重新运行完整回归，不能沿用旧 CI。
 3. 真实 API 仍被 401 阻塞，真实 E1 不得启动；下一项科学工作必须先解除该阻塞，再完成成本探针和 E1 配置冻结。
 
 ## 环境与复现
@@ -43,7 +43,7 @@ uv run --no-sync python -c 'from collections import Counter; from pathlib import
 
 - `results/raw/`、`.local/`、`.worktrees/`、完整 prompt/response 和私有日志不得提交。
 - `results/index.jsonl` 只能包含公开元数据；不得改写既有条目。
-- v1 AppWorld Mock 的干净运行 SHA 为 `4f96f12dd7b791affd23259f8e4a8b81d5a19900`；E1 v1 为 `3f9a3115a8a1a80e130204948d51ad062357ae71`；E1 v2 为 `5933f9b20449c6c6417b01dd0e0493f61c388e00`。最终文档 SHA 与实验运行 SHA 不同是正常的。
+- AppWorld Mock v1/v2 的干净运行 SHA 分别为 `4f96f12dd7b791affd23259f8e4a8b81d5a19900`、`b1f560d95009e531f43b91cb4970532ce1308117`；E1 v1/v2/v3 分别为 `3f9a3115a8a1a80e130204948d51ad062357ae71`、`5933f9b20449c6c6417b01dd0e0493f61c388e00`、`243880c1a4c2613a85301b165a41031d4d55bc08`。最终文档 SHA 与实验运行 SHA 不同是正常的。
 - 原始 AppWorld 证据还保留在 `D:\TC-MO-ME\.worktrees\appworld\.local\`，不要清理该目录。
 
 ## 真实模型与 E1 门槛

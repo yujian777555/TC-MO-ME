@@ -15,7 +15,7 @@
 - AppWorld 固定提交 `42b5bcf3cd334fee33f0c37c02070a9f5807add5`、数据 `0.2.0` 的安装与完整官方 tests：全部通过，两个上游 MCP 用例保持跳过。
 - 官方 ground-truth 三任务 `3/3` 通过，评分报告与轨迹存在；不是自研 Agent 成绩。
 - 自研 Agent Mock 在真实 AppWorld 上执行 3 Episodes/9 Mock calls，三个官方分数均为 0，失败完整保留。
-- E1 Mock v1 完成 112 次并暴露 8 个 O3 donor-clone；v2 修复后 112/112 succeeded，16 个 O3 child 均不同于全部父代。两轮原始数据均保留。
+- E1 Mock v1 完成 112 次并暴露 8 个 O3 donor-clone；v2/v3 均为 112/112 succeeded，16 个 O3 child 均不同于全部父代；v3 进一步验证严格事件依赖和终态语义。三轮原始数据均保留。
 - 代码验收提交的 GitHub Actions [run 45571352088](https://github.com/yujian777555/TC-MO-ME/actions/runs/45571352088) 全部通过；后续代码变更仍需重新运行 CI。
 
 ### 尚未完成或受阻
