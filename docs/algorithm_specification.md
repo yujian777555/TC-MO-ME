@@ -142,7 +142,7 @@ O1 与 O2 的区别是变换范围，不代表二者已证明互补。O3 的实�
 
 `ModelResponse` 包含 `content`、模型 ID/版本、64 位小写 `prompt_hash`、`model_seed_supported`、`usage` 和可空 `finish_reason`。`text`、`output_text` 是 `content` 的只读别名。
 
-`ModelAdapter.generate` 统一处理重试和用量中的 `calls=1`、`retries`、`elapsed_seconds`。Mock 适配器是确定性的，使用空格分词构造测试用量并将计时固定为零；它不能作为真实模型效果证据。
+`ModelAdapter.generate` 统一处理重试和用量中的 `calls=1`、`retries`、`elapsed_seconds`；`calls` 表示 logical generation 次数，`retries` 表示额外 provider attempts。最终失败抛出 `ModelCallError`，保留原异常 chain，并携带 attempts、retries、elapsed 和已知 usage，供算子及账本记录失败成本。请求与适配器静态费率对应的 `price_id` 不匹配时，在 provider 调用前拒绝，避免给估算成本贴上错误价格标签。Mock 适配器是确定性的，使用空格分词构造测试用量并将计时固定为零；它不能作为真实模型效果证据。
 
 ### 7.2 UsageRecord 与成本依据
 
@@ -152,6 +152,7 @@ O1 与 O2 的区别是变换范围，不代表二者已证明互补。O3 的实�
 | token | 可空且非负的 `prompt_tokens`、`completion_tokens`、`total_tokens` |
 | 调用 | 非负 `calls`（默认 1）、`retries`（默认 0）、`elapsed_seconds`（默认 0） |
 | 成本 | 可空且非负的 `Decimal api_cost`，以及 `cost_basis` |
+| 阶段 | 可空 `phase`，取值为 `generation`、`evaluation` 或 `None`；用于分阶段成本归集，缺失时不能声称完整 |
 
 `CostBasis` 的规范序列化值为：
 
@@ -161,7 +162,7 @@ O1 与 O2 的区别是变换范围，不代表二者已证明互补。O3 的实�
 
 若输入和输出 token 已知且适配器配置了两种每百万 token 价格，且提供方未返回成本，适配器可计算估算成本。缺少任一必要信息时成本保持未知，不得写成零。
 
-`group_usage`/`aggregate_usage` 按 `(model_id, model_version, price_id, cost_basis)` 分组，避免合并不同模型、版本、价格或成本依据。任一记录的某个 token 字段未知，该组对应聚合 token 字段即为未知；调用、重试和耗时求和；已知成本在组内以 `Decimal` 求和，未知成本组保持 null。
+`group_usage`/`aggregate_usage` 按 `(model_id, model_version, price_id, cost_basis, phase)` 分组，避免合并不同模型、版本、价格、成本依据或生命周期阶段。任一记录的某个 token 字段未知，该组对应聚合 token 字段即为未知；调用、重试和耗时求和；已知成本在组内以 `Decimal` 求和，未知成本组保持 null。
 
 ## 8. EpisodeRecord 与成本完整性
 
