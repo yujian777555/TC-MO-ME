@@ -1,8 +1,8 @@
 schema_version: 1
 enabled: true
 auto_execute: false
-run_id: e0-appworld-mock-smoke-v1
-experiment_id: e0-appworld-mock-smoke-v1
+run_id: e0-appworld-mock-smoke-v2
+experiment_id: e0-appworld-mock-smoke-v2
 model:
   enabled: true
   adapter: mock

@@ -119,7 +119,7 @@ def test_appworld_mock_config_uses_unique_experiment_names_without_real_appworld
 ) -> None:
     config = Path(__file__).parents[1] / "configs" / "e0" / "appworld_mock.yaml"
     payload = yaml.safe_load(config.read_text(encoding="utf-8"))
-    assert payload["run_id"] == "e0-appworld-mock-smoke-v1"
+    assert payload["run_id"] == "e0-appworld-mock-smoke-v2"
     assert [task["task_id"] for task in payload["tasks"]] == [
         "82e2fac_1",
         "82e2fac_2",
@@ -154,7 +154,7 @@ def test_appworld_mock_config_uses_unique_experiment_names_without_real_appworld
     assert FakeAppWorldEnvironment.constructions == [
         {
             "root": ".local/appworld",
-            "experiment_name": f"e0-appworld-mock-smoke-v1-episode-{index:04d}",
+            "experiment_name": f"e0-appworld-mock-smoke-v2-episode-{index:04d}",
             "seed": 0,
             "timeout_seconds": 30,
         }
