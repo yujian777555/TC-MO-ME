@@ -9,16 +9,15 @@
 - 仓库：`https://github.com/yujian777555/TC-MO-ME`
 - 分支：`experiment/e0-bootstrap`；不得直接推 main。
 - main 起始 SHA：`a73bc1abcdd0d73e084b615fe9046fa38ded59a5`
-- 本文更新时 SHA：`193d64b`；接管时必须以 `git rev-parse HEAD` 和 PR 最新提交为准。
+- 本文更新时 SHA：`f374054`；接管时必须以 `git rev-parse HEAD` 和 PR 最新提交为准。
 - 草稿 PR：https://github.com/yujian777555/TC-MO-ME/pull/1
-- 当前 `336 passed`、Ruff 通过；最新已推送绿色 CI 为提交 `561d2d7` 的 run `45566329857`，不能替代后续提交的 CI。
+- 当前 `352 passed`、Ruff 通过；此前绿色 CI 为提交 `561d2d7` 的 run `45566329857`，最终提交必须以最新 CI 为准。
 
 ## 首先完成的工作
 
-1. 查看 O3 donor-clone 修复所在工作单元是否已合并。v1 `results/raw/e1-mock-dry-run-v1/` 中 8 个 O3 `generation_failed` 是结构设计诊断，不得删除或覆盖。
-2. 合并后运行新的 `e1-mock-dry-run-v2`，必须确认 112 Episodes、16 states、176 events，16 个 O3 child 均与所有父代不同；v2 使用全新 run 目录。
-3. 运行完整 pytest、Ruff、build、干净 frozen 安装和 secret scan，推送实验分支并等待最新 CI。只有实际通过才更新 STATUS。
-4. 更新 PR #1 和本文的最终 SHA/证据。真实 API 仍被 401 阻塞，真实 E1 不得启动。
+1. v2 已完成：112/112 succeeded、16 states、176 events、364 Mock calls，16 个 O3 child 均与全部父代不同。v1 的 8 个 O3 `generation_failed` 和 v2 的原始记录均不得删除或覆盖。
+2. 运行最终 pytest、Ruff、build、干净 frozen 安装和 secret scan，推送实验分支并等待最新 CI。只有实际通过才更新 STATUS。
+3. 更新 PR #1 和本文的最终 SHA/CI 证据。真实 API 仍被 401 阻塞，真实 E1 不得启动；下一项科学工作必须先解除该阻塞。
 
 ## 环境与复现
 
@@ -32,7 +31,7 @@ uv build
 
 AppWorld 固定 `42b5bcf3cd334fee33f0c37c02070a9f5807add5`、数据 `0.2.0`。Git LFS payload、兼容约束和官方 tests/三任务命令见 `docs/installation_and_runs.md`。本机真实运行使用 Ubuntu WSL；Windows/WSL 共享工作区需要 `git config --local core.autocrlf true` 对齐换行判定，不能用 `--allow-dirty` 绕过正式 provenance。
 
-自研 Agent AppWorld Mock 的完整 WSL 命令和 v1 结果见 `docs/installation_and_runs.md`。E1 v2 合并后可用：
+自研 Agent AppWorld Mock 的完整 WSL 命令和 E1 v1/v2 结果见 `docs/installation_and_runs.md`。需要重跑 E1 v2 时可使用以下命令，但必须先换用从未存在的新 run_id，不能覆盖已验收的 v2：
 
 ```bash
 uv run --no-sync python -c 'from collections import Counter; from pathlib import Path; from tc_mo_me.e1_mock import run_e1_mock; root=Path.cwd(); r=run_e1_mock(root/"configs/e1/mock_dry_run.yaml", root, "results"); print(len(r.episodes), len(r.pre_child_states), len(r.events), Counter(e.run_status for e in r.episodes))'
@@ -44,7 +43,7 @@ uv run --no-sync python -c 'from collections import Counter; from pathlib import
 
 - `results/raw/`、`.local/`、`.worktrees/`、完整 prompt/response 和私有日志不得提交。
 - `results/index.jsonl` 只能包含公开元数据；不得改写既有条目。
-- v1 AppWorld Mock 的干净运行 SHA 为 `4f96f12dd7b791affd23259f8e4a8b81d5a19900`；E1 v1 的干净运行 SHA 为 `3f9a3115a8a1a80e130204948d51ad062357ae71`。最终文档 SHA 与实验运行 SHA 不同是正常的。
+- v1 AppWorld Mock 的干净运行 SHA 为 `4f96f12dd7b791affd23259f8e4a8b81d5a19900`；E1 v1 为 `3f9a3115a8a1a80e130204948d51ad062357ae71`；E1 v2 为 `5933f9b20449c6c6417b01dd0e0493f61c388e00`。最终文档 SHA 与实验运行 SHA 不同是正常的。
 - 原始 AppWorld 证据还保留在 `D:\TC-MO-ME\.worktrees\appworld\.local\`，不要清理该目录。
 
 ## 真实模型与 E1 门槛

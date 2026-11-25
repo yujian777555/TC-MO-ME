@@ -192,3 +192,11 @@ uv run --no-sync python -c 'from collections import Counter; from pathlib import
 实际结果：112 Episodes、16 pre-child states、176 protocol events、340 次 Mock 调用、总成本 `0 USD`，全部 112 条记录 `cost_complete=true`。角色为 64 parent controls + 48 children；104 succeeded，8 generation_failed。
 
 8 个失败位于 block 02/03/06/07/10/11/14/15 的 O3，均为 donor/模块映射产生父代复制而触发严格 `no_change`。这不是任务状态异质性或科学结果。v1 原始账本保留在 `results/raw/e1-mock-dry-run-v1/`，公开索引提交为 `193d64b`，不得覆盖。后续 v2 只能使用新 run_id，并需证明修复后的 O3 child 与全部父代不同。
+
+## E1 Mock dry-run v2（结构设计验证通过）
+
+O3 组合规则修复后，v2 使用协议 `1.1`、plan SHA-256 `7dc3253f4102ac0a1d2fe179e8cb0042865f4995f96e4a5dec6885d5dd40b1e0`、干净运行 SHA `5933f9b20449c6c6417b01dd0e0493f61c388e00` 和新 run_id `e1-mock-dry-run-v2`。执行命令与 v1 相同，但配置已更新且运行前 Git 干净。
+
+主工作区实际结果：112/112 succeeded，64 parent controls + 48 children，16 states，176 events，364 Mock calls，6976 输入 tokens、2108 输出 tokens，全部成本完整且总成本 `0 USD`。O3 为 16/16 成功；逐条解析私有 lineage 确认 16 个 child 都使用四个父代，且 child hash 不在任何 parent hash 集合中，结构性 `no_change=0`。
+
+v1 的 112 条记录及 8 个失败保持不变，v2 使用独立原始目录 `results/raw/e1-mock-dry-run-v2/`。公开索引现保留 v1/v2 全部元数据。v2 仍是 synthetic Mock 设计验证，不是实际 AppWorld 状态解析、真实 E1 样本或算子效果证据。
