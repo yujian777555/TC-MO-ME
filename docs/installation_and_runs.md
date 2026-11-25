@@ -151,3 +151,32 @@ finally:
 ```
 
 这里的 timeout 是 AppWorld 单次执行超时。runner 后续仍需提供进程级超时与隔离，不能把适配器当作完整的进程沙箱。示例不启动模型 API；只有实际使用模型时才应记录对应 token 与成本。
+
+## 自研 Agent 的 AppWorld Mock smoke
+
+运行 `e0-appworld-mock-smoke-v1` 使用干净提交 `4f96f12dd7b791affd23259f8e4a8b81d5a19900`、三个 AppWorld 任务和确定性 WorkflowMockAdapter。模型只生成合法 no-op，允许官方零分；它不是真实 LLM，也不是算法性能实验。
+
+主工作区通过 Ubuntu WSL 执行：
+
+```bash
+cd /mnt/d/TC-MO-ME
+git config --local core.autocrlf true  # 仅在 Windows/WSL 共享工作区对齐换行判定
+export APPWORLD_ROOT="$PWD/.local/appworld"
+export APPWORLD_CACHE="$APPWORLD_ROOT/cache"
+export PYTHONPATH="/mnt/d/TC-MO-ME/src:/mnt/d/TC-MO-ME/.worktrees/appworld/.local/appworld_compat"
+export PYTHONUTF8=1
+export NO_PROXY=non-existent-server.com
+export no_proxy=non-existent-server.com
+.worktrees/appworld/.venv-wsl/bin/python -m tc_mo_me.cli run \
+  configs/e0/appworld_mock.yaml --results-root results
+```
+
+实际结果：3 Episodes、9 次 Mock 模型调用、成本 `0 USD`。`82e2fac_1`、`82e2fac_2`、`82e2fac_3` 的官方分数均为 `0.0`，`run_status=task_failed`，失败均保留。三条记录 `cost_complete=true`，usage phase 均为 `evaluation`，Git SHA 与上述干净提交一致。
+
+每个任务均实际存在官方 `evaluation/report.md`、`logs/environment_io.md` 和 `logs/api_calls.jsonl`。私有账本与轨迹位于 ignored 的 `results/raw/e0-appworld-mock-smoke-v1/`，AppWorld 原始环境输出位于 `.local/appworld/experiments/outputs/e0-appworld-mock-smoke-v1-episode-*/`；公开 `results/index.jsonl` 仅追加三条元数据。
+
+## 真实模型 API 探针状态
+
+在发现本机存在 OpenAI 凭据后，仅尝试以 `gpt-5-mini-2025-08-07` 做模型元数据查询，请求返回 401，确认凭据不可用。没有发起 chat/completion 或其他模型生成，真实模型生成次数为 0，模型生成成本为 `0 USD`。未打印、保存或提交凭据；未使用其他未知凭据重试。
+
+因此真实 API `EXECUTED=NO`，E0 的真实模型成本测量和 E1 模型/价格冻结仍被阻塞。Mock 的显式零价格和官方 ground-truth 的零模型调用成本不能替代真实 API 成本证据。
