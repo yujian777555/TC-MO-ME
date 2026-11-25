@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "experiment/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.13"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7.1.4
+        with:
+          version: "0.10.10"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install Python
+        run: uv python install "${{ matrix.python-version }}"
+      - name: Install locked dependencies
+        run: uv sync --frozen --group dev --python "${{ matrix.python-version }}"
+      - name: Ruff
+        run: uv run --no-sync ruff check .
+      - name: Pytest
+        run: uv run --no-sync pytest
+      - name: Build distributions
+        run: uv build
+
+  appworld:
+    name: AppWorld / Python 3.13
+    runs-on: ubuntu-latest
+    env:
+      APPWORLD_ROOT: ${{ github.workspace }}/.local/appworld
+      APPWORLD_CACHE: ${{ github.workspace }}/.local/appworld/cache
+      PYTHONPATH: ${{ github.workspace }}/.local/appworld_compat
+      PYTHONUTF8: "1"
+      NO_PROXY: non-existent-server.com
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7.1.4
+        with:
+          version: "0.10.10"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Enable Git LFS
+        run: git lfs install
+      - name: Cache AppWorld data
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .local/appworld
+          key: appworld-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: appworld-${{ runner.os }}-
+      - name: Install Python
+        run: uv python install 3.13
+      - name: Install locked benchmark dependencies
+        run: uv sync --frozen --group dev --extra benchmark --python 3.13
+      - name: Check out pinned AppWorld source with LFS payloads
+        run: |
+          git clone https://github.com/stonybrooknlp/appworld.git .local/sources/appworld
+          git -C .local/sources/appworld checkout 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+          git -C .local/sources/appworld lfs pull
+          test "$(git -C .local/sources/appworld rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
+      - name: Reinstall AppWorld from pinned LFS source
+        run: uv pip install --python .venv/bin/python --reinstall --no-deps .local/sources/appworld
+      - name: Configure pinned AppWorld runtime compatibility
+        run: |
+          mkdir -p .local/appworld_compat
+          cat > .local/appworld_compat/sitecustomize.py <<'PY'
+          import builtins
+          from functools import lru_cache, wraps
+
+
+          _original_import = builtins.__import__
+
+
+          def _patch_fastapi(module):
+              if getattr(module, "_appworld_path_compat", False) or not hasattr(module, "Path"):
+                  return
+              original_path = module.Path
+
+              @wraps(original_path)
+              def _path_without_invalid_embed(*args, **kwargs):
+                  kwargs.pop("embed", None)
+                  return original_path(*args, **kwargs)
+
+              module.Path = _path_without_invalid_embed
+              module._appworld_path_compat = True
+
+
+          def _patch_cached_db_connections(module):
+              original = module.get_direct_cached_sqlite3_connection
+              if getattr(original, "_appworld_thread_compat", False):
+                  return
+
+              @lru_cache(maxsize=1000)
+              @wraps(original)
+              def _thread_safe_cached_connection(db_app_path):
+                  connection = module.sqlite3.connect(db_app_path, check_same_thread=False)
+                  connection.execute("PRAGMA mmap_size = 268435456")
+                  return connection
+
+              _thread_safe_cached_connection._appworld_thread_compat = True
+              module.get_direct_cached_sqlite3_connection = _thread_safe_cached_connection
+
+
+          def _import_with_appworld_compatibility(name, *args, **kwargs):
+              module = _original_import(name, *args, **kwargs)
+              if name == "fastapi":
+                  _patch_fastapi(module)
+              elif name == "appworld.apps.lib.models.db":
+                  _patch_cached_db_connections(module)
+              return module
+
+
+          builtins.__import__ = _import_with_appworld_compatibility
+          PY
+      - name: Install AppWorld payloads
+        run: uv run --no-sync appworld install
+      - name: Download AppWorld 0.2.0 task data
+        run: uv run --no-sync appworld download data --root "$APPWORLD_ROOT" --version 0.2.0
+      - name: Verify official AppWorld tests
+        timeout-minutes: 20
+        run: uv run --no-sync appworld verify tests --root "$APPWORLD_ROOT"
+      - name: Verify first three official AppWorld tasks
+        timeout-minutes: 10
+        run: >-
+          uv run --no-sync appworld verify tasks --root "$APPWORLD_ROOT"
+          --include-only-first-n-tasks 3 --num-processes 1
+
+  secret-scan:
+    name: Secret scan / full history
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - name: Scan Git history
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

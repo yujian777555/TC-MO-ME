@@ -1,0 +1,33 @@
+schema_version: 1
+benchmark: appworld
+python_version: "3.13"
+source:
+  repository: https://github.com/stonybrooknlp/appworld.git
+  revision: 42b5bcf3cd334fee33f0c37c02070a9f5807add5
+  local_checkout: .local/sources/appworld
+  reinstall_no_deps: true
+data:
+  version: 0.2.0
+  root: .local/appworld
+  cache: .local/appworld/cache
+compatibility:
+  fastapi_constraint: ">=0.110,<0.151"
+  fastapi_version: 0.150.0
+  fastapi_path_embed_shim: .local/appworld_compat/sitecustomize.py
+  sqlmodel_version: 0.0.44
+  sqlalchemy_version: 2.0.55
+  windows_runner: wsl
+verification:
+  official_tests: true
+  include_test_tasks: false
+  include_only_first_n_tasks: 3
+  num_processes: 1
+adapter:
+  experiment_name: null
+  seed: 0
+  timeout_seconds: 30
+  overwrite_existing_outputs: false
+model:
+  enabled: false
+  api_calls: 0
+  api_cost_usd: 0.0

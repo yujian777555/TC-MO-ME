@@ -1,0 +1,63 @@
+schema_version: 1
+enabled: true
+auto_execute: false
+run_id: e0-appworld-mock-smoke-v2
+experiment_id: e0-appworld-mock-smoke-v2
+model:
+  enabled: true
+  adapter: mock
+  model_id: e0-deterministic-mock
+  model_version: mock-v1
+  price_id: explicit-zero-price-for-mock-only
+  input_price_per_million: "0"
+  output_price_per_million: "0"
+  temperature: 0.0
+  max_tokens: 512
+  timeout_seconds: 5
+  max_retries: 0
+environment:
+  kind: appworld
+  root: .local/appworld
+  execution_timeout_seconds: 30
+  official_score_zero_allowed: true
+runner:
+  max_steps: 8
+  timeout_seconds: 120
+  process_isolation: true
+  results_root: results
+limits:
+  max_episodes: 3
+  max_model_calls: 9
+tasks:
+  - {task_id: 82e2fac_1, task_family: 82e2fac, seed: 0}
+  - {task_id: 82e2fac_2, task_family: 82e2fac, seed: 0}
+  - {task_id: 82e2fac_3, task_family: 82e2fac, seed: 0}
+genome:
+  schema_version: "0.1"
+  system_prompt: Follow the requested node format. The mock model emits only a legal no-op.
+  planning_policy:
+    strategy: decompose
+    max_steps: 8
+  code_generation_policy:
+    language: python
+    response_format: strict_json_code_only
+  verification_policy:
+    require_checks: true
+    structured_decision: finish_or_continue
+  workflow_graph:
+    entry_id: plan
+    exit_ids: [verify]
+    max_nodes: 8
+    nodes:
+      - {id: plan, type: planner, config: {}}
+      - {id: generate, type: generator, config: {}}
+      - {id: execute, type: executor, config: {}}
+      - {id: verify, type: verifier, config: {}}
+    edges:
+      - {source: plan, target: generate}
+      - {source: generate, target: execute}
+      - {source: execute, target: verify}
+  identity:
+    genome_id: e0-appworld-mock-control
+    origin: manual_non_evolved
+  lineage: {}

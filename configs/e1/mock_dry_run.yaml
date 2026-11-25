@@ -1,0 +1,31 @@
+schema_version: 1
+enabled: true
+run_id: e1-mock-dry-run-v3
+experiment_id: e1-mock-dry-run
+source_protocol:
+  config_path: configs/e1/pilot.yaml
+  config_sha256: 01388a4022e5ab3ad530be9c12e5cd2449c860bba3e8e4d0f88569fd72bbf79b
+  plan_sha256: 7dc3253f4102ac0a1d2fe179e8cb0042865f4995f96e4a5dec6885d5dd40b1e0
+model:
+  adapter: mock
+  model_id: e1-deterministic-mock
+  model_version: e1-mock-v1
+  price_id: explicit-zero-e1-mock-v1
+  input_price_per_million: "0"
+  output_price_per_million: "0"
+  temperature: 0.0
+  max_tokens: 512
+  timeout_seconds: 5
+  max_retries: 0
+environment:
+  kind: synthetic_mock
+  instruction: Complete one deterministic synthetic E1 mock episode and finish verification.
+runner:
+  max_steps: 8
+  process_isolation: false
+  timeout_seconds: null
+limits:
+  max_blocks: 16
+  max_episodes: 112
+provenance:
+  require_clean: true
