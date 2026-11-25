@@ -234,7 +234,16 @@ def test_single_block_commits_parents_then_state_then_each_child(tmp_path: Path)
     ).splitlines()
     assert len(event_lines) == 11
     assert RunLedger(results_root, config_run_id(), allow_existing=True).read_episodes() == result.episodes
-    assert not (results_root / "index.jsonl").exists()
+    index_entries = [
+        json.loads(line)
+        for line in (results_root / "index.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(index_entries) == 7
+    assert all(
+        not {"code", "output", "request", "response", "raw_steps", "trajectory"} & set(entry)
+        for entry in index_entries
+    )
     assert (repo_index.read_bytes() if repo_index.exists() else None) == index_before
 
 
