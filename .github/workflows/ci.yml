@@ -84,8 +84,6 @@ jobs:
           test "$(git -C .local/sources/appworld rev-parse HEAD)" = "42b5bcf3cd334fee33f0c37c02070a9f5807add5"
       - name: Reinstall AppWorld from pinned LFS source
         run: uv pip install --python .venv/bin/python --reinstall --no-deps .local/sources/appworld
-      - name: Install AppWorld-compatible SQLModel stack
-        run: uv pip install --python .venv/bin/python --no-deps sqlmodel==0.0.44 sqlalchemy==2.0.55
       - name: Configure pinned AppWorld runtime compatibility
         run: |
           mkdir -p .local/appworld_compat

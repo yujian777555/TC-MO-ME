@@ -6,7 +6,7 @@
 - AppWorld 官方仓库：`https://github.com/stonybrooknlp/appworld.git`。
 - 固定提交：`42b5bcf3cd334fee33f0c37c02070a9f5807add5`。
 - 任务数据版本：`0.2.0`。
-- benchmark extra：`fastapi>=0.110,<0.151`；当前 `uv.lock` 解析为 `0.150.0`。
+- benchmark extra：`fastapi>=0.110,<0.151`、`sqlmodel>=0.0.19,<0.0.45`、`sqlalchemy>=2.0.14,<2.1,<=2.0.55`；当前 `uv.lock` 分别解析为 `0.150.0`、`0.0.44`、`2.0.55`。
 - root：`.local/appworld`；payload 测试缓存：`.local/appworld/cache`。两者均被 Git 忽略。
 
 ## Git LFS 源码安装
@@ -26,9 +26,6 @@ git -C .local/sources/appworld rev-parse HEAD
 uv pip install --python .venv/bin/python --reinstall --no-deps .local/sources/appworld
 # uv pip install --python .venv/Scripts/python.exe --reinstall --no-deps .local/sources/appworld
 
-uv pip install --python .venv/bin/python --no-deps sqlmodel==0.0.44 sqlalchemy==2.0.55
-# uv pip install --python .venv/Scripts/python.exe --no-deps sqlmodel==0.0.44 sqlalchemy==2.0.55
-
 export APPWORLD_ROOT="$PWD/.local/appworld"
 export APPWORLD_CACHE="$APPWORLD_ROOT/cache"
 export PYTHONUTF8=1
@@ -40,7 +37,7 @@ export no_proxy=non-existent-server.com
 
 这些适配不修改第三方源码、不绕过 payload 解包，也不跳过任何测试。CI 在 ignored 目录生成同一文件。`NO_PROXY=non-existent-server.com` 防止本机代理把官方“不可达服务器”测试变成空 502，让上游正常处理 DNS ConnectionError。
 
-SQLModel 0.0.45 起会把普通 datetime 字段按 UTC 处理并拒绝 AppWorld 使用的 naive datetime；[上游 issue #229](https://github.com/StonyBrookNLP/appworld/issues/229) 建议 `<0.0.45`。这里固定 `sqlmodel==0.0.44`，并同时满足其 `SQLAlchemy<2.1` 约束而固定 `sqlalchemy==2.0.55`。
+SQLModel 0.0.45 起会把普通 datetime 字段按 UTC 处理并拒绝 AppWorld 使用的 naive datetime；[上游 issue #229](https://github.com/StonyBrookNLP/appworld/issues/229) 建议 `<0.0.45`。benchmark extra 因此显式约束 `sqlmodel>=0.0.19,<0.0.45`，并以 `sqlalchemy>=2.0.14,<2.1,<=2.0.55` 覆盖 SQLModel 0.0.44 自身的 SQLAlchemy 下限、固定已实测版本，frozen sync 直接得到 `sqlmodel==0.0.44` 和 `sqlalchemy==2.0.55`，无需事后手动降级。
 
 [FastAPI 0.151.0](https://github.com/fastapi/fastapi/releases/tag/0.151.0) 及提交 [`b3e04195abc78b506d5a861425111f36271651a1`](https://github.com/fastapi/fastapi/commit/b3e04195abc78b506d5a861425111f36271651a1) 改变了显式 null 的处理：非空 Body 有默认值时，旧版把 null 当缺失并应用默认，新版则交给 Pydantic 校验。AppWorld 的 Todoist `priority=Body("medium")` 不接受 null，但测试会显式传 `priority=None`，因此 benchmark extra 固定 `fastapi>=0.110,<0.151`。该变化不需要调整 Starlette；实测 frozen sync 保持 `starlette==1.10.0`。
 
