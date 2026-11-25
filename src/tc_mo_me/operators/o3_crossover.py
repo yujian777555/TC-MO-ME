@@ -48,7 +48,6 @@ class O3CrossoverOperator(EvolutionOperator):
                     },
                 )
             primary = normalized[0]
-            primary_id = parent_id(primary)
             by_id = {parent_id(parent): parent for parent in normalized}
             candidate_payload = content_payload(primary)
             for component in CONTENT_COMPONENTS:
@@ -66,7 +65,9 @@ class O3CrossoverOperator(EvolutionOperator):
                     details={"child_hash": child_hash},
                 )
             modified_paths = [
-                component for component in CONTENT_COMPONENTS if sources[component] != primary_id
+                component
+                for component in CONTENT_COMPONENTS
+                if getattr(candidate, component) != getattr(primary, component)
             ]
             return build_success(
                 operator_id=self.operator_id,

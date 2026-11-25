@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, NamedTuple, Self
+from typing import Any, Literal, NamedTuple, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -17,6 +17,7 @@ __all__ = [
     "DeterministicMockAdapter",
     "MockModelAdapter",
     "ModelAdapter",
+    "ModelCallError",
     "ModelRequest",
     "ModelResponse",
     "OpenAICompatibleAdapter",
@@ -60,9 +61,12 @@ class ModelRequest(_StrictModel):
 
 
 class UsageRecord(_StrictModel):
+    """Logical-call usage, with retries as extra attempts and an optional phase."""
+
     model_id: str = Field(min_length=1)
     model_version: str | None = None
     price_id: str | None = None
+    phase: Literal["generation", "evaluation"] | None = None
     prompt_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
@@ -94,6 +98,7 @@ class UsageGroupKey(NamedTuple):
     model_version: str | None
     price_id: str | None
     cost_basis: CostBasis
+    phase: Literal["generation", "evaluation"] | None = None
 
 
 class ModelResponse(_StrictModel):
@@ -122,6 +127,29 @@ class UnsupportedSeedError(ValueError):
     pass
 
 
+class ModelCallError(Exception):
+    """A final provider failure with its attempts, timing, and known usage."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempts: int,
+        retries: int,
+        elapsed_seconds: float,
+        usage: UsageRecord,
+    ) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+        self.retries = retries
+        self.elapsed_seconds = elapsed_seconds
+        self.usage = usage
+
+    @property
+    def elapsed(self) -> float:
+        return self.elapsed_seconds
+
+
 def canonical_prompt_bytes(request: ModelRequest) -> bytes:
     payload = {"prompt": request.prompt, "system_prompt": request.system_prompt}
     return json.dumps(
@@ -144,6 +172,7 @@ def _sum_optional(values: Iterable[int | None]) -> int | None:
 
 
 def group_usage(records: Iterable[UsageRecord]) -> dict[UsageGroupKey, UsageRecord]:
+    """Aggregate records without merging model, price, cost basis, or phase."""
     grouped: dict[UsageGroupKey, list[UsageRecord]] = {}
     for record in records:
         key = UsageGroupKey(
@@ -151,6 +180,7 @@ def group_usage(records: Iterable[UsageRecord]) -> dict[UsageGroupKey, UsageReco
             record.model_version,
             record.price_id,
             record.cost_basis,
+            record.phase,
         )
         grouped.setdefault(key, []).append(record)
 
@@ -166,6 +196,7 @@ def group_usage(records: Iterable[UsageRecord]) -> dict[UsageGroupKey, UsageReco
             model_id=key.model_id,
             model_version=key.model_version,
             price_id=key.price_id,
+            phase=key.phase,
             prompt_tokens=_sum_optional(item.prompt_tokens for item in items),
             completion_tokens=_sum_optional(item.completion_tokens for item in items),
             total_tokens=_sum_optional(item.total_tokens for item in items),
@@ -251,10 +282,17 @@ class ModelAdapter(ABC):
         self._deterministic_timing = deterministic_timing
 
     def generate(self, request: ModelRequest) -> ModelResponse:
+        """Generate once logically, retrying with additional provider attempts."""
         if request.seed is not None and not self.model_seed_supported:
             raise UnsupportedSeedError(
                 f"model {request.model_id!r} does not declare support for seed"
             )
+        if (
+            self.price_id is not None
+            and request.price_id is not None
+            and request.price_id != self.price_id
+        ):
+            raise ValueError("request price_id must match the adapter's configured price_id")
 
         max_retries = self.max_retries if request.max_retries is None else request.max_retries
         timeout = self.timeout_seconds if request.timeout_seconds is None else request.timeout_seconds
@@ -265,7 +303,24 @@ class ModelAdapter(ABC):
                 response = self._generate_once(request, timeout)
             except Exception as error:
                 if retries >= max_retries or not _is_retryable(error):
-                    raise
+                    elapsed = 0.0 if self._deterministic_timing else time.monotonic() - started
+                    attempts = retries + 1
+                    usage = UsageRecord(
+                        model_id=request.model_id,
+                        price_id=self.price_id
+                        if self.price_id is not None
+                        else request.price_id,
+                        calls=1,
+                        retries=retries,
+                        elapsed_seconds=elapsed,
+                    )
+                    raise ModelCallError(
+                        f"model generation failed after {attempts} provider attempts: {error}",
+                        attempts=attempts,
+                        retries=retries,
+                        elapsed_seconds=elapsed,
+                        usage=usage,
+                    ) from error
                 if self.retry_backoff_seconds:
                     time.sleep(self.retry_backoff_seconds * (2**retries))
                 retries += 1
@@ -316,7 +371,7 @@ class ModelAdapter(ABC):
         return UsageRecord(
             model_id=request.model_id,
             model_version=model_version,
-            price_id=request.price_id if request.price_id is not None else self.price_id,
+            price_id=self.price_id if self.price_id is not None else request.price_id,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,

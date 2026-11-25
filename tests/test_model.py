@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+import tc_mo_me.model as model_module
 from tc_mo_me.model import (
     CostBasis,
     MockModelAdapter,
@@ -123,6 +124,7 @@ def test_mock_is_deterministic_and_returns_model_metadata() -> None:
     assert first.usage.elapsed_seconds == 0.0
     assert first.usage.api_cost is None
     assert first.usage.cost_basis is CostBasis.UNKNOWN
+    assert first.usage.phase is None
 
 
 def test_mock_estimates_cost_only_when_tokens_and_prices_are_known() -> None:
@@ -155,6 +157,7 @@ def usage_record(
     cost_basis: CostBasis = CostBasis.ACTUAL,
     cost: Decimal | None = Decimal("1"),
     prompt_tokens: int | None = 1,
+    phase: str | None = None,
 ) -> UsageRecord:
     total_tokens = None if prompt_tokens is None else prompt_tokens + 1
     return UsageRecord(
@@ -169,6 +172,7 @@ def usage_record(
         elapsed_seconds=0.25,
         api_cost=cost,
         cost_basis=cost_basis,
+        phase=phase,
     )
 
 
@@ -202,6 +206,29 @@ def test_usage_grouping_does_not_merge_versions_prices_or_cost_basis() -> None:
     assert UsageGroupKey("model", "v2", "price-a", CostBasis.ACTUAL) in grouped
     assert UsageGroupKey("model", "v1", "price-b", CostBasis.ACTUAL) in grouped
     assert UsageGroupKey("model", "v1", "price-a", CostBasis.ESTIMATED) in grouped
+
+
+def test_usage_grouping_separates_generation_evaluation_and_unscoped_phases() -> None:
+    records = [
+        usage_record(phase="generation"),
+        usage_record(phase="generation", cost=Decimal("2")),
+        usage_record(phase="evaluation"),
+        usage_record(),
+    ]
+
+    grouped = group_usage(records)
+    generation_key = UsageGroupKey("model", "v1", "price-a", CostBasis.ACTUAL, "generation")
+    evaluation_key = UsageGroupKey("model", "v1", "price-a", CostBasis.ACTUAL, "evaluation")
+    unscoped_key = UsageGroupKey("model", "v1", "price-a", CostBasis.ACTUAL)
+
+    assert len(grouped) == 3
+    assert grouped[generation_key].calls == 2
+    assert grouped[generation_key].api_cost == Decimal("3")
+    assert grouped[generation_key].phase == "generation"
+    assert grouped[evaluation_key].calls == 1
+    assert grouped[evaluation_key].phase == "evaluation"
+    assert grouped[unscoped_key].calls == 1
+    assert grouped[unscoped_key].phase is None
 
 
 def test_openai_adapter_maps_response_actual_cost_and_timeout() -> None:
@@ -265,6 +292,27 @@ def test_openai_adapter_uses_token_estimate_when_provider_cost_is_absent() -> No
     assert usage.cost_basis is CostBasis.ESTIMATED
 
 
+def test_request_price_id_mismatch_is_rejected_before_provider_call() -> None:
+    client = FakeClient([provider_response()])
+    adapter = OpenAICompatibleAdapter(
+        client=client,
+        price_id="provider-price-v1",
+        input_price_per_million=Decimal("1"),
+        output_price_per_million=Decimal("2"),
+    )
+    request = ModelRequest(
+        model_id="vendor/model",
+        prompt="hello",
+        price_id="unrelated-request-price",
+    )
+
+    with pytest.raises(ValueError, match="price_id"):
+        adapter.generate(request)
+
+    assert client.calls == []
+    assert client.options == []
+
+
 def test_openai_adapter_preserves_unknown_version_tokens_and_cost() -> None:
     client = FakeClient(
         [
@@ -314,23 +362,57 @@ def test_timeout_errors_are_retryable() -> None:
     assert len(client.calls) == 2
 
 
-def test_retries_are_exhausted_after_configured_attempts() -> None:
+def test_retry_exhaustion_raises_structured_error_with_complete_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client = FakeClient([ProviderError(500), ProviderError(500), ProviderError(500)])
-    adapter = OpenAICompatibleAdapter(client=client, max_retries=2)
+    adapter = OpenAICompatibleAdapter(
+        client=client,
+        max_retries=2,
+        price_id="provider-price-v1",
+    )
+    monkeypatch.setattr(model_module.time, "monotonic", iter([10.0, 10.375]).__next__)
 
-    with pytest.raises(ProviderError, match="provider status 500"):
+    with pytest.raises(Exception) as exc_info:
         adapter.generate(ModelRequest(model_id="vendor/model", prompt="hello"))
 
+    error = exc_info.value
+    assert type(error).__name__ == "ModelCallError"
+    assert isinstance(error, model_module.ModelCallError)
+    assert isinstance(error.__cause__, ProviderError)
+    assert "provider status 500" in str(error)
+    assert error.attempts == 3
+    assert error.retries == 2
+    assert error.elapsed_seconds == 0.375
+    assert error.usage.calls == 1
+    assert error.usage.retries == 2
+    assert error.usage.elapsed_seconds == 0.375
+    assert error.usage.price_id == "provider-price-v1"
+    assert error.usage.prompt_tokens is None
+    assert error.usage.completion_tokens is None
+    assert error.usage.total_tokens is None
+    assert error.usage.api_cost is None
+    assert error.usage.cost_basis is CostBasis.UNKNOWN
+    assert error.usage.phase is None
     assert len(client.calls) == 3
 
 
-def test_non_retryable_error_is_not_retried() -> None:
+def test_non_retryable_error_is_wrapped_without_additional_attempts() -> None:
     client = FakeClient([ProviderError(400)])
     adapter = OpenAICompatibleAdapter(client=client, max_retries=5)
 
-    with pytest.raises(ProviderError, match="provider status 400"):
+    with pytest.raises(Exception) as exc_info:
         adapter.generate(ModelRequest(model_id="vendor/model", prompt="hello"))
 
+    error = exc_info.value
+    assert type(error).__name__ == "ModelCallError"
+    assert isinstance(error, model_module.ModelCallError)
+    assert isinstance(error.__cause__, ProviderError)
+    assert "provider status 400" in str(error)
+    assert error.attempts == 1
+    assert error.retries == 0
+    assert error.usage.calls == 1
+    assert error.usage.retries == 0
     assert len(client.calls) == 1
 
 

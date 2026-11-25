@@ -19,7 +19,14 @@ from tc_mo_me.genome import (
     genome_hash,
     validate_genome,
 )
-from tc_mo_me.model import CostBasis, ModelAdapter, ModelRequest, ModelResponse, UsageRecord
+from tc_mo_me.model import (
+    CostBasis,
+    ModelAdapter,
+    ModelCallError,
+    ModelRequest,
+    ModelResponse,
+    UsageRecord,
+)
 
 LOCAL_COMPONENTS = (
     "system_prompt",
@@ -147,6 +154,7 @@ class _OperatorFailure(Exception):
 def zero_usage(model_id: str = "deterministic") -> UsageRecord:
     return UsageRecord(
         model_id=model_id,
+        phase="generation",
         prompt_tokens=0,
         completion_tokens=0,
         total_tokens=0,
@@ -161,6 +169,7 @@ def zero_usage(model_id: str = "deterministic") -> UsageRecord:
 def attempted_usage(model_id: str) -> UsageRecord:
     return UsageRecord(
         model_id=model_id,
+        phase="generation",
         prompt_tokens=None,
         completion_tokens=None,
         total_tokens=None,
@@ -190,11 +199,21 @@ def failure_result(
 def validate_context(context: OperatorContext) -> None:
     if not isinstance(context.model_id, str) or not context.model_id:
         raise _OperatorFailure("invalid_context", "model_id must be a non-empty string")
-    if isinstance(context.generation, bool) or context.generation < 1:
-        raise _OperatorFailure("invalid_context", "generation must be at least 1")
-    if context.child_id is not None and not context.child_id:
-        raise _OperatorFailure("invalid_context", "child_id must be non-empty when provided")
-    if context.created_at_utc.utcoffset() != timedelta(0):
+    if (
+        isinstance(context.generation, bool)
+        or not isinstance(context.generation, int)
+        or context.generation < 1
+    ):
+        raise _OperatorFailure("invalid_context", "generation must be an integer of at least 1")
+    if context.child_id is not None and (
+        not isinstance(context.child_id, str) or not context.child_id
+    ):
+        raise _OperatorFailure(
+            "invalid_context", "child_id must be a non-empty string when provided"
+        )
+    if not isinstance(context.created_at_utc, datetime) or (
+        context.created_at_utc.utcoffset() != timedelta(0)
+    ):
         raise _OperatorFailure("invalid_context", "created_at_utc must include the UTC timezone")
 
 
@@ -250,6 +269,7 @@ def content_payload(genome: Genome) -> dict[str, Any]:
 
 
 def call_model(context: OperatorContext, prompt: str, system_prompt: str) -> ModelResponse:
+    """Call a generation-phase model without discarding final failure usage."""
     if context.model is None:
         raise _OperatorFailure(
             "model_unavailable",
@@ -276,7 +296,16 @@ def call_model(context: OperatorContext, prompt: str, system_prompt: str) -> Mod
             usage=zero_usage(context.model_id),
         ) from error
     try:
-        return context.model.generate(request)
+        response = context.model.generate(request)
+        usage = response.usage.model_copy(update={"phase": "generation"})
+        return response.model_copy(update={"usage": usage})
+    except ModelCallError as error:
+        raise _OperatorFailure(
+            "model_error",
+            f"model generation failed: {error}",
+            details={"exception_type": type(error).__name__},
+            usage=error.usage.model_copy(update={"phase": "generation"}),
+        ) from error
     except Exception as error:
         raise _OperatorFailure(
             "model_error",

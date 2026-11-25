@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 
+import tc_mo_me.model as model_module
 from tc_mo_me.genome import CONTENT_COMPONENTS, Genome, WorkflowGraph, genome_hash
 from tc_mo_me.model import CostBasis, MockModelAdapter, ModelAdapter
 
@@ -82,6 +83,20 @@ class FailingAdapter(ModelAdapter):
         raise RuntimeError("mock provider failed")
 
 
+class RetryingFailingAdapter(ModelAdapter):
+    def __init__(self):
+        super().__init__(
+            max_retries=2,
+            deterministic_timing=False,
+            price_id="mock-priced-v1",
+        )
+        self.provider_attempts = 0
+
+    def _generate_once(self, request, timeout_seconds):
+        self.provider_attempts += 1
+        raise TimeoutError("mock provider timed out")
+
+
 def assert_failed(result, code):
     assert result.success is False
     assert result.ok is False
@@ -103,6 +118,7 @@ def assert_zero_usage(usage):
     assert usage.total_tokens == 0
     assert usage.api_cost == Decimal("0")
     assert usage.cost_basis is CostBasis.ESTIMATED
+    assert usage.phase == "generation"
 
 
 def test_public_operator_exports_are_available():
@@ -176,6 +192,7 @@ def test_o1_applies_only_the_selected_component_with_complete_audit_metadata():
     assert result.usage.total_tokens > 0
     assert result.usage.api_cost > 0
     assert result.usage.cost_basis is CostBasis.ESTIMATED
+    assert result.usage.phase == "generation"
     assert len(adapter.requests) == 1
     assert adapter.requests[0].seed == 7
     assert adapter.requests[0].model_id == "mock-model"
@@ -350,7 +367,63 @@ def test_o1_model_exception_is_a_structured_failure_with_attempted_usage():
     assert result.usage.total_tokens is None
     assert result.usage.api_cost is None
     assert result.usage.cost_basis is CostBasis.UNKNOWN
+    assert result.usage.phase == "generation"
     assert "mock provider failed" in result.error.message
+
+
+def test_o1_retry_exhaustion_preserves_model_attempts_timing_and_usage(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    base = load_base()
+    local = load_operator("o1_local")
+    parent = make_genome()
+    adapter = RetryingFailingAdapter()
+    monkeypatch.setattr(model_module.time, "monotonic", iter([20.0, 21.5]).__next__)
+
+    result = local.O1LocalOperator().generate(
+        parent,
+        base.MutationSpec(component="system_prompt"),
+        base.OperatorContext(model=adapter, model_id="mock"),
+    )
+
+    assert_failed(result, "model_error")
+    assert adapter.provider_attempts == 3
+    assert result.usage.calls == 1
+    assert result.usage.retries == 2
+    assert result.usage.elapsed_seconds == 1.5
+    assert result.usage.price_id == "mock-priced-v1"
+    assert result.usage.prompt_tokens is None
+    assert result.usage.completion_tokens is None
+    assert result.usage.total_tokens is None
+    assert result.usage.api_cost is None
+    assert result.usage.cost_basis is CostBasis.UNKNOWN
+    assert result.usage.phase == "generation"
+    assert "mock provider timed out" in result.error.message
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("generation", "1"),
+        ("generation", 1.5),
+        ("child_id", 123),
+        ("created_at_utc", "2026-02-03T04:05:06+00:00"),
+        ("created_at_utc", None),
+    ],
+)
+def test_invalid_context_field_types_return_structured_failures(field, value):
+    base = load_base()
+    local = load_operator("o1_local")
+    context = base.OperatorContext(model=None, model_id="mock", **{field: value})
+
+    result = local.O1LocalOperator().generate(
+        make_genome(),
+        base.MutationSpec(component="system_prompt"),
+        context,
+    )
+
+    assert_failed(result, "invalid_context")
+    assert_zero_usage(result.usage)
 
 
 @pytest.mark.parametrize("operation", ["insert", "replace", "reorder"])
@@ -401,6 +474,7 @@ def test_o2_applies_one_valid_graph_edit(operation):
     assert result.lineage.child_hash == genome_hash(result.child)
     assert result.lineage.child_hash != genome_hash(parent)
     assert result.usage.calls == 1
+    assert result.usage.phase == "generation"
     assert parent.model_dump(mode="json") == before
     for component in CONTENT_COMPONENTS:
         if component != "workflow_graph":
@@ -697,6 +771,30 @@ def test_o3_deterministically_recombines_whole_components_without_model_calls():
     assert lineage.usage == result.usage
     assert_zero_usage(result.usage)
     assert [parent.model_dump(mode="json") for parent in parents] == before
+
+
+def test_o3_modified_paths_use_content_differences_and_preserve_donor_sources():
+    base = load_base()
+    crossover = load_operator("o3_crossover")
+    primary, second, third = crossover_parents()
+    second = second.model_copy(update={"system_prompt": primary.system_prompt})
+    sources = crossover_sources()
+
+    result = crossover.O3CrossoverOperator().generate(
+        [primary, second, third],
+        base.MutationSpec(component_sources=sources),
+        base.OperatorContext(model=None),
+    )
+
+    assert result.success is True
+    assert result.child is not None
+    assert result.child.system_prompt == primary.system_prompt == second.system_prompt
+    assert result.modified_paths == ["code_generation_policy", "workflow_graph"]
+    assert "system_prompt" not in result.modified_paths
+    assert result.lineage is not None
+    assert result.lineage.component_sources == sources
+    assert result.lineage.component_sources["system_prompt"] == "p2"
+    assert result.lineage.modified_paths == result.modified_paths
 
 
 def test_o3_same_inputs_reproduce_the_complete_result():
