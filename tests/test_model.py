@@ -435,3 +435,26 @@ def test_retry_and_timeout_values_are_validated() -> None:
         OpenAICompatibleAdapter(client=FakeClient([]), max_retries=-1)
     with pytest.raises(ValueError, match="timeout_seconds"):
         OpenAICompatibleAdapter(client=FakeClient([]), timeout_seconds=0)
+
+
+def test_attempt_progress_callback_reports_attempt_start_and_preserves_final_usage() -> None:
+    client = FakeClient([ProviderError(500), provider_response()])
+    adapter = OpenAICompatibleAdapter(client=client, max_retries=1)
+    events = []
+
+    def record_progress(event) -> None:
+        events.append((event.attempt, event.retries, event.elapsed_seconds, len(client.calls)))
+
+    response = adapter.generate(
+        ModelRequest(model_id="vendor/model", prompt="hello"),
+        progress_callback=record_progress,
+    )
+
+    assert [(attempt, retries, calls) for attempt, retries, _elapsed, calls in events] == [
+        (1, 0, 0),
+        (2, 1, 1),
+    ]
+    assert all(elapsed >= 0 for _attempt, _retries, elapsed, _calls in events)
+    assert response.usage.calls == 1
+    assert response.usage.retries == 1
+    assert len(client.calls) == 2

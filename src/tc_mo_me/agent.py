@@ -20,6 +20,7 @@ from tc_mo_me.model import (
     CostBasis,
     MockModelAdapter,
     ModelAdapter,
+    ModelAttemptProgress,
     ModelCallError,
     ModelRequest,
     ModelResponse,
@@ -627,6 +628,12 @@ class AgentRunner:
         )
         state.usage_entries.append(pending_entry)
         raw["pending_usage"] = pending_entry.usage.model_dump(mode="json")
+        raw["pending_telemetry"] = {
+            "attempt": 0,
+            "retries": 0,
+            "elapsed_seconds": 0.0,
+            "retry_count_basis": "observed_lower_bound",
+        }
         state.prompt_hashes.append(request.prompt_hash)
         state.trajectory.record_score(
             state.next_step(),
@@ -639,8 +646,28 @@ class AgentRunner:
             },
         )
         self._write_artifacts(state)
+
+        def record_attempt(progress: ModelAttemptProgress) -> None:
+            pending_entry.usage = pending_entry.usage.model_copy(
+                update={
+                    "retries": progress.retries,
+                    "elapsed_seconds": progress.elapsed_seconds,
+                }
+            )
+            raw["pending_usage"] = pending_entry.usage.model_dump(mode="json")
+            raw["pending_telemetry"] = {
+                "attempt": progress.attempt,
+                "retries": progress.retries,
+                "elapsed_seconds": progress.elapsed_seconds,
+                "retry_count_basis": "observed_lower_bound",
+            }
+            self._write_artifacts(state)
+
         try:
-            response = self.model.generate(request)
+            if type(self.model).generate is ModelAdapter.generate:
+                response = self.model.generate(request, progress_callback=record_attempt)
+            else:
+                response = self.model.generate(request)
         except Exception as error:
             if isinstance(error, ModelCallError):
                 usage = error.usage.model_copy(update={"phase": "evaluation"})
@@ -663,12 +690,12 @@ class AgentRunner:
                     completion_tokens=None,
                     total_tokens=None,
                     calls=1,
-                    retries=0,
-                    elapsed_seconds=0.0,
+                    retries=pending_entry.usage.retries,
+                    elapsed_seconds=pending_entry.usage.elapsed_seconds,
                     api_cost=None,
                     cost_basis=CostBasis.UNKNOWN,
                 )
-                retries = 0
+                retries = pending_entry.usage.retries
             pending_entry.usage = usage
             pending_entry.phase = "evaluation"
             state.run_status = "model_failed"

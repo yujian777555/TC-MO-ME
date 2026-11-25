@@ -5,7 +5,7 @@ import json
 import os
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, NamedTuple, Self
@@ -17,6 +17,7 @@ __all__ = [
     "DeterministicMockAdapter",
     "MockModelAdapter",
     "ModelAdapter",
+    "ModelAttemptProgress",
     "ModelCallError",
     "ModelRequest",
     "ModelResponse",
@@ -99,6 +100,12 @@ class UsageGroupKey(NamedTuple):
     price_id: str | None
     cost_basis: CostBasis
     phase: Literal["generation", "evaluation"] | None = None
+
+
+class ModelAttemptProgress(NamedTuple):
+    attempt: int
+    retries: int
+    elapsed_seconds: float
 
 
 class ModelResponse(_StrictModel):
@@ -281,7 +288,12 @@ class ModelAdapter(ABC):
         self.output_price_per_million = output_price_per_million
         self._deterministic_timing = deterministic_timing
 
-    def generate(self, request: ModelRequest) -> ModelResponse:
+    def generate(
+        self,
+        request: ModelRequest,
+        *,
+        progress_callback: Callable[[ModelAttemptProgress], None] | None = None,
+    ) -> ModelResponse:
         """Generate once logically, retrying with additional provider attempts."""
         if request.seed is not None and not self.model_seed_supported:
             raise UnsupportedSeedError(
@@ -299,6 +311,15 @@ class ModelAdapter(ABC):
         started = time.monotonic()
         retries = 0
         while True:
+            if progress_callback is not None:
+                elapsed = 0.0 if self._deterministic_timing else time.monotonic() - started
+                progress_callback(
+                    ModelAttemptProgress(
+                        attempt=retries + 1,
+                        retries=retries,
+                        elapsed_seconds=elapsed,
+                    )
+                )
             try:
                 response = self._generate_once(request, timeout)
             except Exception as error:

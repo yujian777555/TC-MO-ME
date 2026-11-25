@@ -1009,3 +1009,72 @@ def test_generation_failure_with_close_failure_still_commits_once(tmp_path: Path
     assert "deterministic close failure" in private
     assert "deterministic close failure" in trajectory
     assert "generation_failed" in private
+
+
+class RetryThenHangModel(ModelAdapter):
+    def __init__(self) -> None:
+        super().__init__(
+            max_retries=2,
+            model_seed_supported=True,
+            price_id="retry-hang-price-v1",
+        )
+        self.attempts = 0
+
+    def _generate_once(self, request, timeout_seconds):
+        import time
+
+        self.attempts += 1
+        if self.attempts == 1:
+            raise TimeoutError("first attempt is retryable")
+        time.sleep(30)
+        raise AssertionError("unreachable after second-attempt hard timeout")
+
+
+def test_second_attempt_hang_preserves_observed_retry_lower_bound(tmp_path: Path) -> None:
+    import time
+
+    ledger = RunLedger(tmp_path / "results", "retry-hang-run", provenance=provenance())
+    runner = AgentRunner(
+        model=RetryThenHangModel(),
+        model_id="mock-model",
+        ledger=ledger,
+        provenance=provenance(),
+        process_isolation=True,
+        timeout_seconds=0.75,
+    )
+    started = time.monotonic()
+
+    episode = runner.run_episode(
+        genome=make_genome(),
+        environment=FakeEnvironment(),
+        task_id="task-1",
+        task_family="mock",
+        seed=7,
+        experiment_id="experiment-1",
+        episode_id="retry-hang-episode",
+    )
+
+    assert time.monotonic() - started < 8
+    assert episode.run_status == "timeout"
+    assert episode.api_calls == 1
+    assert episode.retry_count >= 1
+    assert episode.input_tokens is None
+    assert episode.output_tokens is None
+    assert episode.api_cost is None
+    assert episode.total_cost is None
+    assert episode.cost_complete is False
+    assert len(episode.usage_records) == 1
+    usage = episode.usage_records[0]
+    assert usage.calls == 1
+    assert usage.retries >= 1
+    assert usage.phase == "evaluation"
+    assert usage.prompt_tokens is None
+    assert usage.completion_tokens is None
+    assert usage.total_tokens is None
+    assert usage.api_cost is None
+    assert ledger.read_episodes() == [episode]
+    assert len((tmp_path / "results" / "index.jsonl").read_text().splitlines()) == 1
+    private = artifact(ledger, episode.episode_id, "private_steps.jsonl").read_text()
+    assert '"attempt": 2' in private
+    assert "observed_lower_bound" in private
+    assert "process_terminated" in private
