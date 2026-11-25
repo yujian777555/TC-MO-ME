@@ -16,12 +16,12 @@
 - 官方 ground-truth 三任务 `3/3` 通过，评分报告与轨迹存在；不是自研 Agent 成绩。
 - 自研 Agent Mock 在真实 AppWorld 上执行 3 Episodes/9 Mock calls，三个官方分数均为 0，失败完整保留。
 - E1 Mock v1 完成 112 次并暴露 8 个 O3 donor-clone；v2 修复后 112/112 succeeded，16 个 O3 child 均不同于全部父代。两轮原始数据均保留。
-- GitHub Actions [run 45566329857](https://github.com/yujian777555/TC-MO-ME/actions/runs/45566329857) 全部通过；后续最终提交仍需重新运行 CI。
+- 代码验收提交的 GitHub Actions [run 45571352088](https://github.com/yujian777555/TC-MO-ME/actions/runs/45571352088) 全部通过；后续代码变更仍需重新运行 CI。
 
 ### 尚未完成或受阻
 
 - 真实 OpenAI 元数据请求返回 401，真实模型生成和成本测量未执行；E1 模型与价格配置因此未冻结。
-- 最终干净安装和最新提交 CI 仍需完成；真实 API 阻塞不得被 12 项工程验收或 Mock 结果掩盖。
+- 最终干净安装和代码验收 CI 已完成；真实 API 阻塞不得被 12 项工程验收或 Mock 结果掩盖。
 
 ## E1：算子异质性 Pilot（协议已冻结，真实实验未启动）
 

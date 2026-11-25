@@ -6,7 +6,7 @@ E0 基础设施、AppWorld 和 Mock 闭环均已有实测证据，12 项工程�
 
 - 分支：`experiment/e0-bootstrap`
 - main 起始 SHA：`a73bc1abcdd0d73e084b615fe9046fa38ded59a5`
-- 当前文档对应 SHA：`f374054`（最终交付以 Git 日志和 PR 为准）
+- 最终代码验收 SHA：`9b8b27f0b086115cdb10d34ef00f089505d0233a`（文档后续提交与最终 HEAD 以 Git 日志和 PR 为准）
 - 草稿 PR：https://github.com/yujian777555/TC-MO-ME/pull/1
 - RQ1/RQ2 算法模型未实现，跨任务迁移保持 PARKED。
 
@@ -33,7 +33,7 @@ E0 基础设施、AppWorld 和 Mock 闭环均已有实测证据，12 项工程�
 | 7 | 三种算子 Mock 运行 | PASS（结构验证） | O1/O2/O3 测试通过；v1 暴露 8 个 donor-clone，v2 已核验 16 个 O3 child 均不同于全部父代。 |
 | 8 | 账本字段完整 | PASS | 用户指定字段、多父代、usage phase、成本完整性、失败和产物哈希均由测试与真实记录核验。 |
 | 9 | 自动化测试全部通过 | PASS（当前本地） | 最新已集成套件 352 passed；完整官方 tests 通过。 |
-| 10 | GitHub Actions 真实 CI 通过 | PASS（指定提交） | 提交 561d2d7 的 run 45566329857 全部通过；最新提交仍需新 CI。 |
+| 10 | GitHub Actions 真实 CI 通过 | PASS | 代码验收提交 9b8b27f 的 [run 45571352088](https://github.com/yujian777555/TC-MO-ME/actions/runs/45571352088) 全部通过，含完整 AppWorld、三平台测试、构建和 secret scan。 |
 | 11 | 无凭据进入 Git 历史 | PASS（当前扫描） | 全历史 gitleaks CI 通过；`.env`、raw 和私有日志被忽略，未提交真实凭据。 |
 | 12 | NEXT_AGENT 准确交接 | PASS | 已记录接管命令、v1/v2 数据边界、真实 API 阻塞和后续门槛；最终 SHA 以 Git/PR 为准。 |
 

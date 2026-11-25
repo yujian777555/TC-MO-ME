@@ -9,15 +9,15 @@
 - 仓库：`https://github.com/yujian777555/TC-MO-ME`
 - 分支：`experiment/e0-bootstrap`；不得直接推 main。
 - main 起始 SHA：`a73bc1abcdd0d73e084b615fe9046fa38ded59a5`
-- 本文更新时 SHA：`f374054`；接管时必须以 `git rev-parse HEAD` 和 PR 最新提交为准。
+- 最终代码验收 SHA：`9b8b27f0b086115cdb10d34ef00f089505d0233a`；接管时必须以 `git rev-parse HEAD` 和 PR 最新提交为准。
 - 草稿 PR：https://github.com/yujian777555/TC-MO-ME/pull/1
-- 当前 `352 passed`、Ruff 通过；此前绿色 CI 为提交 `561d2d7` 的 run `45566329857`，最终提交必须以最新 CI 为准。
+- 当前 `352 passed`、Ruff 通过；代码验收提交的 [CI run 45571352088](https://github.com/yujian777555/TC-MO-ME/actions/runs/45571352088) 已全绿。
 
 ## 首先完成的工作
 
 1. v2 已完成：112/112 succeeded、16 states、176 events、364 Mock calls，16 个 O3 child 均与全部父代不同。v1 的 8 个 O3 `generation_failed` 和 v2 的原始记录均不得删除或覆盖。
-2. 运行最终 pytest、Ruff、build、干净 frozen 安装和 secret scan，推送实验分支并等待最新 CI。只有实际通过才更新 STATUS。
-3. 更新 PR #1 和本文的最终 SHA/CI 证据。真实 API 仍被 401 阻塞，真实 E1 不得启动；下一项科学工作必须先解除该阻塞。
+2. 最终 pytest、Ruff、build、干净 frozen 安装和 CI 均已通过；如需修改代码，必须重新运行完整回归，不能沿用旧 CI。
+3. 真实 API 仍被 401 阻塞，真实 E1 不得启动；下一项科学工作必须先解除该阻塞，再完成成本探针和 E1 配置冻结。
 
 ## 环境与复现
 
