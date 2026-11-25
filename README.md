@@ -4,11 +4,11 @@ Task-Conditioned Multi-Objective Meta-Evolution（TC-MO-ME）面向 LLM Agent �
 
 ## 当前状态
 
-- 已实现 Genome v0.1、canonical hash、parent-child lineage、统一 ModelAdapter、确定性 Mock、O1/O2/O3、append-only Episode 账本和轨迹记录。
-- AppWorld 固定到官方源码提交 `42b5bcf3cd334fee33f0c37c02070a9f5807add5`、数据版本 `0.2.0`；官方 ground-truth 三任务已取得 `Passed 3/3`，并核验评分报告与执行轨迹。该结果不是自研 Agent 或模型成绩。
-- 本地项目测试当前为 `115 passed`，Ruff 通过。完整官方 AppWorld tests 有一个已定位到 FastAPI 显式 `null` 语义变化的 Todoist 用例失败，定向兼容复验正在独立分支进行。
+- 已实现 Genome v0.1、canonical hash、parent-child lineage、统一 ModelAdapter、确定性 Mock、O1/O2/O3、append-only Episode 账本、轨迹记录和最小 AgentRunner。
+- AppWorld 固定到官方源码提交 `42b5bcf3cd334fee33f0c37c02070a9f5807add5`、数据版本 `0.2.0`；官方 ground-truth 三任务已取得 `Passed 3/3`，完整官方 tests 也已通过。该结果不是自研 Agent 或模型成绩。
+- 提交 `a8a41c6` 的 [GitHub Actions run 45561814592](https://github.com/yujian777555/TC-MO-ME/actions/runs/45561814592) 已全部通过，包括 AppWorld、三平台项目测试、构建和 secret scan。后续审计修复仍在集成，最终状态以 `STATUS.md` 和最新 CI 为准。
 - 真实模型 API 尚未执行成功：现有 OpenAI 凭据的元数据请求返回 401，未发起模型生成，模型调用成本为 `0 USD`。这不能被解释为真实 API 验收通过。
-- E1 只冻结算子异质性 Pilot 协议；真实 112 Episode 尚未运行，也没有任何算子优于其他算子的科学结论。
+- E1 已冻结任务、seed、父代、donor、事件顺序和统计协议；真实模型仍未冻结，真实 112 Episode 尚未运行，也没有任何算子优于其他算子的科学结论。
 
 精确状态与证据见 [STATUS.md](STATUS.md)、[ROADMAP.md](ROADMAP.md)、[NEXT_AGENT.md](NEXT_AGENT.md) 和 [AppWorld 实测记录](docs/APPWORLD.md)。
 
