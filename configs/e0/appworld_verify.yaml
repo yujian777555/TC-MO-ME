@@ -11,6 +11,8 @@ data:
   root: .local/appworld
   cache: .local/appworld/cache
 compatibility:
+  fastapi_constraint: ">=0.110,<0.151"
+  fastapi_version: 0.150.0
   fastapi_path_embed_shim: .local/appworld_compat/sitecustomize.py
   sqlmodel_version: 0.0.44
   sqlalchemy_version: 2.0.55

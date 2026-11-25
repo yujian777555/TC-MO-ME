@@ -6,6 +6,7 @@
 - AppWorld 官方仓库：`https://github.com/stonybrooknlp/appworld.git`。
 - 固定提交：`42b5bcf3cd334fee33f0c37c02070a9f5807add5`。
 - 任务数据版本：`0.2.0`。
+- benchmark extra：`fastapi>=0.110,<0.151`；当前 `uv.lock` 解析为 `0.150.0`。
 - root：`.local/appworld`；payload 测试缓存：`.local/appworld/cache`。两者均被 Git 忽略。
 
 ## Git LFS 源码安装
@@ -35,11 +36,13 @@ export NO_PROXY=non-existent-server.com
 export no_proxy=non-existent-server.com
 ```
 
-固定 payload 的部分路由给 `fastapi.Path` 传递只对 Body 有意义的 `embed=True`，FastAPI 0.165 会直接拒绝该关键字。兼容层通过 lazy import hook 忽略 Path 的这个无效参数，避免在每个子进程启动时预载 FastAPI。上游 cached direct SQLite 连接还会在 remote/非 remote 测试交替时跨线程 backup，因此兼容层只给该专用缓存连接设置 `check_same_thread=False`，保留相同的 cache 容量和 PRAGMA，不改变全局 sqlite 默认行为。
+固定 payload 的部分路由给 `fastapi.Path` 传递只对 Body 有意义的 `embed=True`。签名检查确认 FastAPI 0.150.0 与 0.165.0 都不接受该关键字，因此即使固定 FastAPI 后也仍需既有兼容层。该兼容层通过 lazy import hook 忽略 Path 的这个无效参数，避免在每个子进程启动时预载 FastAPI。上游 cached direct SQLite 连接还会在 remote/非 remote 测试交替时跨线程 backup，因此兼容层只给该专用缓存连接设置 `check_same_thread=False`，保留相同的 cache 容量和 PRAGMA，不改变全局 sqlite 默认行为。
 
 这些适配不修改第三方源码、不绕过 payload 解包，也不跳过任何测试。CI 在 ignored 目录生成同一文件。`NO_PROXY=non-existent-server.com` 防止本机代理把官方“不可达服务器”测试变成空 502，让上游正常处理 DNS ConnectionError。
 
 SQLModel 0.0.45 起会把普通 datetime 字段按 UTC 处理并拒绝 AppWorld 使用的 naive datetime；[上游 issue #229](https://github.com/StonyBrookNLP/appworld/issues/229) 建议 `<0.0.45`。这里固定 `sqlmodel==0.0.44`，并同时满足其 `SQLAlchemy<2.1` 约束而固定 `sqlalchemy==2.0.55`。
+
+[FastAPI 0.151.0](https://github.com/fastapi/fastapi/releases/tag/0.151.0) 及提交 [`b3e04195abc78b506d5a861425111f36271651a1`](https://github.com/fastapi/fastapi/commit/b3e04195abc78b506d5a861425111f36271651a1) 改变了显式 null 的处理：非空 Body 有默认值时，旧版把 null 当缺失并应用默认，新版则交给 Pydantic 校验。AppWorld 的 Todoist `priority=Body("medium")` 不接受 null，但测试会显式传 `priority=None`，因此 benchmark extra 固定 `fastapi>=0.110,<0.151`。该变化不需要调整 Starlette；实测 frozen sync 保持 `starlette==1.10.0`。
 
 ```bash
 mkdir -p .local/appworld_compat
