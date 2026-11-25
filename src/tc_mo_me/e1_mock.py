@@ -48,6 +48,15 @@ from tc_mo_me.provenance import capture_provenance
 
 Sha256 = Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9a-f]{64}$")]
 NonEmptyString = Annotated[str, StringConstraints(strict=True, min_length=1)]
+PortableRunId = Annotated[
+    str,
+    StringConstraints(
+        strict=True,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+    ),
+]
 
 
 class _StrictModel(BaseModel):
@@ -119,7 +128,7 @@ class MockProvenanceConfig(_StrictModel):
 class E1MockConfig(_StrictModel):
     schema_version: Literal[1]
     enabled: Literal[True]
-    run_id: Literal["e1-mock-dry-run-v2"]
+    run_id: PortableRunId
     experiment_id: Literal["e1-mock-dry-run"]
     source_protocol: SourceProtocolConfig
     model: MockModelConfig
@@ -582,10 +591,19 @@ def run_e1_mock(
                 generation=attempt,
             )
             episodes.append(record)
+            terminal_position = 6 + child_position * 2
+            if record.run_status == "generation_failed":
+                expected_events[terminal_position] = ProtocolEvent(
+                    event_id=f"{child_id}:finalized",
+                    block_index=block.block_index,
+                    kind="child_finalized",
+                    episode_id=child_id,
+                    depends_on_event_ids=[generated_event.event_id],
+                )
             _append_protocol_event(
                 ledger,
                 events,
-                expected_events[6 + child_position * 2],
+                expected_events[terminal_position],
             )
 
         if events[block_event_start:] != expected_events:

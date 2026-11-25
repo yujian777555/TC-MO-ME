@@ -30,7 +30,7 @@ def test_mock_config_freezes_full_pilot_and_explicit_zero_cost() -> None:
     config = load_mock_config(MOCK_CONFIG)
     plan = build_plan_from_file(PILOT_CONFIG, repo_root=ROOT)
 
-    assert config.run_id == "e1-mock-dry-run-v2"
+    assert config.run_id == "e1-mock-dry-run-v3"
     assert config.experiment_id == "e1-mock-dry-run"
     assert plan.config.protocol_version == "1.1"
     assert config.source_protocol.config_path == "configs/e1/pilot.yaml"
@@ -283,7 +283,36 @@ def test_single_block_commits_parents_then_state_then_each_child(tmp_path: Path)
 
 
 def config_run_id() -> str:
-    return "e1-mock-dry-run-v2"
+    return "e1-mock-dry-run-v3"
+
+
+def test_custom_portable_run_id_is_executable_and_cannot_overwrite(tmp_path: Path) -> None:
+    config_path = small_config(tmp_path)
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    payload["run_id"] = "e1-mock-dry-run-v3-portable-retry"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    results_root = tmp_path / "portable-results"
+
+    result = run_e1_mock(config_path, ROOT, results_root, allow_dirty=True)
+
+    assert result.config.run_id == "e1-mock-dry-run-v3-portable-retry"
+    assert result.ledger.run_dir == results_root / "raw" / payload["run_id"]
+    assert len(result.episodes) == 7
+    with pytest.raises(FileExistsError):
+        run_e1_mock(config_path, ROOT, results_root, allow_dirty=True)
+    assert len(result.ledger.read_episodes()) == 7
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    ["", ".hidden", "../escape", "nested/run", "nested\\run", "a" * 129],
+)
+def test_mock_config_rejects_non_portable_run_ids(run_id: str) -> None:
+    payload = yaml.safe_load(MOCK_CONFIG.read_text(encoding="utf-8"))
+    payload["run_id"] = run_id
+
+    with pytest.raises(ValueError, match="run_id|pattern|string"):
+        e1_mock.E1MockConfig.model_validate(payload)
 
 
 def test_generation_failure_is_committed_and_does_not_skip_later_children(
@@ -325,7 +354,15 @@ def test_generation_failure_is_committed_and_does_not_skip_later_children(
         "succeeded",
     ]
     assert result.events[5].event_id == "e1-b00-o1:generated"
-    assert result.events[6].event_id == "e1-b00-o1:evaluated"
+    assert result.events[6].event_id == "e1-b00-o1:finalized"
+    assert result.events[6].kind == "child_finalized"
+    assert result.events[6].episode_id == failed.episode_id
+    assert result.events[6].depends_on_event_ids == ["e1-b00-o1:generated"]
+    assert "e1-b00-o1:evaluated" not in {event.event_id for event in result.events}
+    assert [event.kind for event in result.events[9:]] == [
+        "child_generated",
+        "child_evaluated",
+    ]
     assert len(result.ledger.read_episodes()) == 7
     private_steps = (
         result.ledger.run_dir

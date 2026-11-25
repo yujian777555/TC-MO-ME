@@ -534,3 +534,121 @@ def test_child_execution_events_require_a_serialized_state_payload():
 
     with pytest.raises(ValueError, match="payload|serializ"):
         api.validate_event_order(without_payload)
+
+
+def valid_success_events(api):
+    plan = api.build_plan_from_file(CONFIG_PATH, repo_root=ROOT)
+    block = plan.blocks[0]
+    state = api.build_pre_child_state(
+        block,
+        {
+            episode_id: make_state_input(api, plan, episode_id)
+            for episode_id in block.parent_episode_ids
+        },
+    )
+    return api.build_block_events(plan, 0, pre_child_state=state)
+
+
+@pytest.mark.parametrize(
+    ("event_index", "updates"),
+    [
+        (0, {"episode_id": None}),
+        (0, {"episode_id": "e1-b01-p0"}),
+        (0, {"depends_on_event_ids": ["e1-b00-p1:evaluated"]}),
+        (4, {"block_index": 1}),
+        (4, {"episode_id": "e1-b00-p0"}),
+        (4, {"depends_on_event_ids": []}),
+        (
+            4,
+            {
+                "depends_on_event_ids": [
+                    "e1-b00-p0:evaluated",
+                    "e1-b00-p1:evaluated",
+                    "e1-b00-p2:evaluated",
+                    "e1-b00-p0:evaluated",
+                ]
+            },
+        ),
+        (
+            4,
+            {
+                "depends_on_event_ids": [
+                    "e1-b00-p0:evaluated",
+                    "e1-b00-p1:evaluated",
+                    "e1-b00-p2:evaluated",
+                    "e1-b01-p0:evaluated",
+                ]
+            },
+        ),
+        (5, {"event_id": "e1-b00-o1:other"}),
+        (5, {"block_index": 1}),
+        (5, {"episode_id": "e1-b00-o2"}),
+        (5, {"depends_on_event_ids": []}),
+        (
+            5,
+            {
+                "depends_on_event_ids": [
+                    "e1-b00-p0:evaluated",
+                    "e1-b00-p1:evaluated",
+                    "e1-b00-p2:evaluated",
+                    "e1-b00-p3:evaluated",
+                ]
+            },
+        ),
+        (
+            5,
+            {
+                "depends_on_event_ids": [
+                    "e1-b00-p0:evaluated",
+                    "e1-b00-p1:evaluated",
+                    "e1-b00-p2:evaluated",
+                    "e1-b00-p3:evaluated",
+                    "e1-b00-p0:evaluated",
+                ]
+            },
+        ),
+        (6, {"event_id": "e1-b00-o1:finalized"}),
+        (6, {"block_index": 1}),
+        (6, {"episode_id": "e1-b00-o2"}),
+        (6, {"depends_on_event_ids": []}),
+        (6, {"depends_on_event_ids": ["e1-b00:pre-child-state-serialized"]}),
+        (
+            6,
+            {
+                "depends_on_event_ids": [
+                    "e1-b00-o1:generated",
+                    "e1-b00-o1:generated",
+                ]
+            },
+        ),
+    ],
+)
+def test_event_order_rejects_invalid_episode_block_and_dependencies(
+    event_index, updates
+):
+    api = load_api()
+    events = valid_success_events(api)
+    events[event_index] = events[event_index].model_copy(update=updates)
+
+    with pytest.raises(ValueError):
+        api.validate_event_order(events)
+
+
+def test_child_finalized_is_valid_and_terminal_events_are_unique():
+    api = load_api()
+    events = valid_success_events(api)
+    generated = events[5]
+    evaluated = events[6]
+    finalized = api.ProtocolEvent(
+        event_id="e1-b00-o1:finalized",
+        block_index=0,
+        kind="child_finalized",
+        episode_id="e1-b00-o1",
+        depends_on_event_ids=[generated.event_id],
+    )
+    events[6] = finalized
+
+    api.validate_event_order(events)
+
+    with pytest.raises(ValueError, match="terminal|multiple|unique"):
+        api.validate_event_order([*events[:6], finalized, evaluated, *events[7:]])

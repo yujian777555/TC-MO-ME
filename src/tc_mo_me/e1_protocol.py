@@ -195,6 +195,7 @@ class ProtocolEvent(StrictModel):
         "pre_child_state_serialized",
         "child_generated",
         "child_evaluated",
+        "child_finalized",
     ]
     episode_id: NonEmptyString | None = None
     depends_on_event_ids: list[NonEmptyString] = Field(default_factory=list)
@@ -687,39 +688,106 @@ def build_block_events(
     return events
 
 
+def _validate_event_identity(event: ProtocolEvent) -> None:
+    block_id = f"e1-b{event.block_index:02d}"
+    if event.kind == "parent_evaluated":
+        expected_episodes = {f"{block_id}-p{index}" for index in range(4)}
+        expected_event_id = f"{event.episode_id}:evaluated"
+    elif event.kind == "pre_child_state_serialized":
+        if event.episode_id is not None:
+            raise ValueError("pre-child state events cannot reference an episode")
+        expected_event_id = f"{block_id}:pre-child-state-serialized"
+    elif event.kind in {"child_generated", "child_evaluated", "child_finalized"}:
+        expected_episodes = {f"{block_id}-o{index}" for index in range(1, 4)}
+        suffix = {
+            "child_generated": "generated",
+            "child_evaluated": "evaluated",
+            "child_finalized": "finalized",
+        }[event.kind]
+        expected_event_id = f"{event.episode_id}:{suffix}"
+    else:
+        raise ValueError(f"unsupported protocol event kind: {event.kind}")
+
+    if event.kind != "pre_child_state_serialized" and event.episode_id not in expected_episodes:
+        raise ValueError(
+            f"event {event.event_id!r} has an invalid episode for block {event.block_index}"
+        )
+    if event.event_id != expected_event_id:
+        raise ValueError(
+            f"event identity mismatch: expected {expected_event_id!r}, got {event.event_id!r}"
+        )
+
+
+def _validate_event_dependencies(
+    event: ProtocolEvent,
+    dependencies: list[ProtocolEvent],
+) -> None:
+    block_id = f"e1-b{event.block_index:02d}"
+    parent_event_ids = [f"{block_id}-p{index}:evaluated" for index in range(4)]
+    state_event_id = f"{block_id}:pre-child-state-serialized"
+    if event.kind == "parent_evaluated":
+        if dependencies:
+            raise ValueError("parent_evaluated events cannot have dependencies")
+        return
+    if event.kind == "pre_child_state_serialized":
+        if event.depends_on_event_ids != parent_event_ids:
+            raise ValueError("pre-child state requires this block's four parent evaluations")
+        if any(dependency.kind != "parent_evaluated" for dependency in dependencies):
+            raise ValueError("pre-child state dependencies must be parent_evaluated events")
+        if event.payload_sha256 is None:
+            raise ValueError("serialized pre-child state requires a payload hash")
+    elif event.kind == "child_generated":
+        if event.depends_on_event_ids != [*parent_event_ids, state_event_id]:
+            raise ValueError(
+                "child generation requires this block's four parent evaluations and state"
+            )
+        expected_kinds = [
+            "parent_evaluated",
+            "parent_evaluated",
+            "parent_evaluated",
+            "parent_evaluated",
+            "pre_child_state_serialized",
+        ]
+        if [dependency.kind for dependency in dependencies] != expected_kinds:
+            raise ValueError("child generation has invalid dependency event types")
+    else:
+        if len(dependencies) != 1:
+            raise ValueError("child terminal events require exactly one child_generated event")
+        generated = dependencies[0]
+        if (
+            generated.kind != "child_generated"
+            or generated.block_index != event.block_index
+            or generated.episode_id != event.episode_id
+        ):
+            raise ValueError("child terminal events must match their generated episode and block")
+    if any(dependency.block_index != event.block_index for dependency in dependencies):
+        raise ValueError("protocol event dependencies cannot cross blocks")
+
+
 def validate_event_order(events: list[ProtocolEvent]) -> None:
     event_ids = [event.event_id for event in events]
     if len(set(event_ids)) != len(event_ids):
         raise ValueError("event_id values must be unique")
-    seen: set[str] = set()
+    seen: dict[str, ProtocolEvent] = {}
+    terminal_episodes: set[tuple[int, str]] = set()
     for event in events:
-        missing = set(event.depends_on_event_ids) - seen
+        _validate_event_identity(event)
+        missing = set(event.depends_on_event_ids) - set(seen)
         if missing:
             raise ValueError(
                 f"event {event.event_id!r} depends on events that do not precede it: "
                 f"{sorted(missing)}"
             )
-        if event.kind == "parent_evaluated" and event.depends_on_event_ids:
-            raise ValueError("parent_evaluated events cannot have dependencies")
-        if event.kind == "pre_child_state_serialized":
-            if len(event.depends_on_event_ids) != 4:
-                raise ValueError("pre-child state requires all four parent evaluations")
-            if event.payload_sha256 is None:
-                raise ValueError("serialized pre-child state requires a payload hash")
-        if event.kind == "child_generated":
-            dependency_kinds = {
-                dependency.kind
-                for dependency in events
-                if dependency.event_id in event.depends_on_event_ids
-            }
-            if len(event.depends_on_event_ids) != 5 or dependency_kinds != {
-                "parent_evaluated",
-                "pre_child_state_serialized",
-            }:
-                raise ValueError(
-                    "child generation must follow four evaluations and serialized state"
-                )
-        seen.add(event.event_id)
+        dependencies = [seen[event_id] for event_id in event.depends_on_event_ids]
+        _validate_event_dependencies(event, dependencies)
+        if event.kind in {"child_evaluated", "child_finalized"}:
+            if event.episode_id is None:
+                raise ValueError("child terminal events require an episode")
+            terminal_key = (event.block_index, event.episode_id)
+            if terminal_key in terminal_episodes:
+                raise ValueError("each child must have exactly one terminal event")
+            terminal_episodes.add(terminal_key)
+        seen[event.event_id] = event
 
 
 __all__ = [
