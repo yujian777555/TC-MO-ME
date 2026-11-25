@@ -180,3 +180,15 @@ export no_proxy=non-existent-server.com
 在发现本机存在 OpenAI 凭据后，仅尝试以 `gpt-5-mini-2025-08-07` 做模型元数据查询，请求返回 401，确认凭据不可用。没有发起 chat/completion 或其他模型生成，真实模型生成次数为 0，模型生成成本为 `0 USD`。未打印、保存或提交凭据；未使用其他未知凭据重试。
 
 因此真实 API `EXECUTED=NO`，E0 的真实模型成本测量和 E1 模型/价格冻结仍被阻塞。Mock 的显式零价格和官方 ground-truth 的零模型调用成本不能替代真实 API 成本证据。
+
+## E1 Mock dry-run v1（结构诊断）
+
+v1 使用干净提交 `3f9a3115a8a1a80e130204948d51ad062357ae71` 和 `configs/e1/mock_dry_run.yaml`，在主工作区执行：
+
+```bash
+uv run --no-sync python -c 'from collections import Counter; from pathlib import Path; from tc_mo_me.e1_mock import run_e1_mock; root=Path.cwd(); r=run_e1_mock(root/"configs/e1/mock_dry_run.yaml", root, "results"); print(len(r.episodes), len(r.pre_child_states), len(r.events), Counter(e.run_status for e in r.episodes))'
+```
+
+实际结果：112 Episodes、16 pre-child states、176 protocol events、340 次 Mock 调用、总成本 `0 USD`，全部 112 条记录 `cost_complete=true`。角色为 64 parent controls + 48 children；104 succeeded，8 generation_failed。
+
+8 个失败位于 block 02/03/06/07/10/11/14/15 的 O3，均为 donor/模块映射产生父代复制而触发严格 `no_change`。这不是任务状态异质性或科学结果。v1 原始账本保留在 `results/raw/e1-mock-dry-run-v1/`，公开索引提交为 `193d64b`，不得覆盖。后续 v2 只能使用新 run_id，并需证明修复后的 O3 child 与全部父代不同。
