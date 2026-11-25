@@ -8,10 +8,16 @@ from typing import Any
 
 import pytest
 
-from tc_mo_me.agent import AgentRunner, GenerationAttempt, TaskSpec
+from tc_mo_me.agent import AgentRunner, GenerationAttempt, ResultIndexError, TaskSpec
 from tc_mo_me.genome import CONTENT_COMPONENTS, Genome
 from tc_mo_me.ledger import RunLedger
-from tc_mo_me.model import CostBasis, MockModelAdapter, ModelAdapter
+from tc_mo_me.model import (
+    CostBasis,
+    MockModelAdapter,
+    ModelAdapter,
+    ModelCallError,
+    UsageRecord,
+)
 from tc_mo_me.operators import MutationSpec, OperatorContext
 from tc_mo_me.operators.o1_local import O1LocalOperator
 from tc_mo_me.operators.o2_structural import O2StructuralOperator
@@ -211,6 +217,9 @@ def test_linear_episode_executes_graph_and_persists_raw_trajectory_and_usage(
     assert episode.usage_records[0].calls == 3
     assert episode.usage_records[0].price_id == "mock-price-v1"
     assert episode.usage_records[0].model_version == "mock-v1"
+    assert {usage.phase for usage in episode.usage_records} == {"evaluation"}
+    assert episode.generation_cost == 0
+    assert episode.evaluation_cost == episode.api_cost
 
     private_path = artifact(ledger, episode.episode_id, "private_steps.jsonl")
     trajectory_path = artifact(ledger, episode.episode_id, "trajectory.jsonl")
@@ -514,6 +523,15 @@ def test_run_experiment_executes_control_and_o1_o2_o3_children_without_leakage(
     assert episodes[3].parent_id == "control"
     assert episodes[3].parent_ids == ["control", "parent-b", "parent-c"]
     assert [episode.api_calls for episode in episodes] == [3, 4, 4, 3]
+    assert {usage.phase for usage in episodes[0].usage_records} == {"evaluation"}
+    for child_episode in episodes[1:]:
+        assert {usage.phase for usage in child_episode.usage_records} == {
+            "generation",
+            "evaluation",
+        }
+        assert sum(
+            usage.calls for usage in child_episode.usage_records if usage.phase == "generation"
+        ) == (0 if child_episode.operator_id == "O3" else 1)
     assert all(episode.run_status == "succeeded" for episode in episodes)
     assert all(environment.closed for environment in environments)
     control_private = artifact(ledger, episodes[0].episode_id, "private_steps.jsonl").read_text()
@@ -567,6 +585,9 @@ def test_failed_operator_generation_is_committed_with_usage_and_parent_lineage(
     assert episode.api_cost == failed.usage.api_cost
     assert episode.total_cost == failed.usage.api_cost
     assert episode.model_version == failed.usage.model_version
+    assert [usage.phase for usage in episode.usage_records] == ["generation"]
+    assert episode.generation_cost == failed.usage.api_cost
+    assert episode.evaluation_cost == 0
     assert episode.parent_id == "control"
     assert episode.parent_ids == ["control"]
     assert episode.child_id is None
@@ -635,3 +656,173 @@ def test_verifier_continue_cannot_finish_at_an_exit_without_an_edge(tmp_path: Pa
     assert episode.run_status == "invalid_workflow"
     assert episode.task_score is None
     assert ledger.read_episodes() == [episode]
+
+
+class RichFailureModel(ModelAdapter):
+    def __init__(self) -> None:
+        super().__init__(model_seed_supported=True)
+
+    def generate(self, request):
+        usage = UsageRecord(
+            model_id=request.model_id,
+            model_version="failed-model-v9",
+            price_id="failed-price-v3",
+            prompt_tokens=11,
+            completion_tokens=0,
+            total_tokens=11,
+            calls=1,
+            retries=3,
+            elapsed_seconds=1.25,
+            api_cost=Decimal("0.125"),
+            cost_basis=CostBasis.ACTUAL,
+        )
+        raise ModelCallError(
+            "rich provider failure",
+            attempts=4,
+            retries=3,
+            elapsed_seconds=1.25,
+            usage=usage,
+        )
+
+    def _generate_once(self, request, timeout_seconds):
+        raise AssertionError("not used")
+
+
+class RetryFailureModel(ModelAdapter):
+    def __init__(self) -> None:
+        super().__init__(
+            max_retries=2,
+            retry_backoff_seconds=0.01,
+            model_seed_supported=True,
+        )
+        self.attempts = 0
+
+    def _generate_once(self, request, timeout_seconds):
+        self.attempts += 1
+        raise TimeoutError("retryable mock timeout")
+
+
+class UnseededQueuedModel(QueuedModel):
+    def __init__(self, *responses: str) -> None:
+        super().__init__(*responses)
+        self.model_seed_supported = False
+
+
+def test_model_call_error_preserves_rich_usage_as_evaluation(tmp_path: Path) -> None:
+    environment = FakeEnvironment()
+    runner, ledger = make_runner(tmp_path, RichFailureModel())
+
+    episode = run_episode(runner, make_genome(), environment)
+
+    assert episode.run_status == "model_failed"
+    assert episode.retry_count == 3
+    assert episode.input_tokens == 11
+    assert episode.output_tokens == 0
+    assert episode.api_cost == Decimal("0.125")
+    assert episode.generation_cost == 0
+    assert episode.evaluation_cost == Decimal("0.125")
+    assert episode.total_cost == Decimal("0.125")
+    assert episode.model_version == "failed-model-v9"
+    assert len(episode.usage_records) == 1
+    usage = episode.usage_records[0]
+    assert usage.phase == "evaluation"
+    assert usage.retries == 3
+    assert usage.elapsed_seconds == 1.25
+    assert usage.price_id == "failed-price-v3"
+    assert environment.closed is True
+    assert ledger.read_episodes() == [episode]
+
+
+def test_retry_exhaustion_preserves_retry_count_elapsed_and_trajectory(
+    tmp_path: Path,
+) -> None:
+    model = RetryFailureModel()
+    runner, ledger = make_runner(tmp_path, model)
+
+    episode = run_episode(runner, make_genome(), FakeEnvironment())
+
+    assert model.attempts == 3
+    assert episode.run_status == "model_failed"
+    assert episode.api_calls == 1
+    assert episode.retry_count == 2
+    assert episode.usage_records[0].phase == "evaluation"
+    assert episode.usage_records[0].retries == 2
+    assert episode.usage_records[0].elapsed_seconds > 0
+    events = [
+        json.loads(line)
+        for line in artifact(ledger, episode.episode_id, "trajectory.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    exceptions = [event for event in events if event["kind"] == "exception"]
+    assert exceptions[-1]["retry_count"] == 2
+    assert exceptions[-1]["will_retry"] is False
+
+
+def test_unseeded_adapter_receives_no_model_seed_but_environment_seed_is_retained(
+    tmp_path: Path,
+) -> None:
+    model = UnseededQueuedModel(*successful_responses())
+    runner, _ = make_runner(tmp_path, model)
+
+    episode = run_episode(runner, make_genome(), FakeEnvironment())
+
+    assert episode.run_status == "succeeded"
+    assert episode.environment_seed == 7
+    assert episode.model_seed_supported is False
+    assert len(model.requests) == 3
+    assert all(request.seed is None for request in model.requests)
+    assert all(request.prompt for request in model.requests)
+
+
+def test_commit_appends_metadata_index_without_code_trajectory_or_secrets(
+    tmp_path: Path,
+) -> None:
+    responses = (
+        json.dumps({"plan": "keep fake-secret-sentinel only in private raw"}),
+        json.dumps({"code": "api_key = 'fake-secret-sentinel'"}),
+        json.dumps({"action": "finish", "reason": "done"}),
+    )
+    runner, ledger = make_runner(tmp_path, QueuedModel(*responses))
+
+    episode = run_episode(runner, make_genome(), FakeEnvironment())
+
+    index_path = tmp_path / "results" / "index.jsonl"
+    entries = [json.loads(line) for line in index_path.read_text().splitlines()]
+    assert len(entries) == 1
+    assert entries[0]["episode_id"] == episode.episode_id
+    assert entries[0]["run_status"] == "succeeded"
+    assert entries[0]["artifact_hashes"] == episode.artifact_hashes
+    serialized = index_path.read_text()
+    assert "fake-secret-sentinel" not in serialized
+    assert "api_key = " not in serialized
+    assert "model_request" not in serialized
+    assert "official mock evaluation" not in serialized
+    assert "raw_steps" not in entries[0]
+    assert "response" not in entries[0]
+    assert "code" not in entries[0]
+    private = artifact(ledger, episode.episode_id, "private_steps.jsonl").read_text()
+    assert "fake-secret-sentinel" in private
+
+
+def test_index_failure_is_explicit_after_nontransactional_ledger_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, ledger = make_runner(tmp_path, QueuedModel(*successful_responses()))
+
+    def fail_index(self, episode):
+        raise OSError("deterministic index disk failure")
+
+    monkeypatch.setattr("tc_mo_me.agent.ResultIndexer.append", fail_index)
+
+    with pytest.raises(ResultIndexError, match="index_failed") as caught:
+        run_episode(runner, make_genome(), FakeEnvironment())
+
+    error = caught.value
+    assert error.run_status == "index_failed"
+    assert error.episode.run_status == "index_failed"
+    assert error.committed_episode.run_status == "succeeded"
+    assert error.ledger_committed is True
+    assert ledger.read_episodes() == [error.committed_episode]
+    assert not (tmp_path / "results" / "index.jsonl").exists()

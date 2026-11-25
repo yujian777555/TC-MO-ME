@@ -12,9 +12,11 @@ import yaml
 from tc_mo_me.agent import (
     AgentRunner,
     MockTaskEnvironment,
+    TaskEnvironment,
     TaskSpec,
     WorkflowMockAdapter,
 )
+from tc_mo_me.environments.appworld_env import AppWorldEnvironment
 from tc_mo_me.genome import validate_genome
 from tc_mo_me.ledger import EpisodeRecord, RunLedger
 from tc_mo_me.provenance import capture_provenance
@@ -77,18 +79,45 @@ def run_config(
         for item in tasks_config
     ]
     environment_config = config.get("environment", {})
-    if environment_config.get("kind") != "mock":
-        raise ValueError("this smoke configuration requires the mock environment")
-    instruction = environment_config["instruction"]
+    environment_kind = environment_config.get("kind")
 
-    def environment_factory(task_id: str, seed: int) -> MockTaskEnvironment:
-        return MockTaskEnvironment(task_id=task_id, instruction=instruction, seed=seed)
+    def environment_factory(task_id: str, seed: int) -> TaskEnvironment:
+        if environment_kind != "mock":
+            raise ValueError("unsupported two-argument environment factory")
+        return MockTaskEnvironment(
+            task_id=task_id,
+            instruction=environment_config["instruction"],
+            seed=seed,
+        )
+
+    def episode_environment_factory(
+        task_id: str,
+        seed: int,
+        run_id: str,
+        episode_id: str,
+    ) -> TaskEnvironment:
+        if environment_kind != "appworld":
+            raise ValueError("unsupported episode environment factory")
+        return AppWorldEnvironment(
+            root=environment_config["root"],
+            experiment_name=f"{run_id}-{episode_id}",
+            seed=seed,
+            timeout_seconds=environment_config.get("execution_timeout_seconds", 30),
+        )
+
+    factory_options: dict[str, Any]
+    if environment_kind == "mock":
+        factory_options = {"environment_factory": environment_factory}
+    elif environment_kind == "appworld":
+        factory_options = {"episode_environment_factory": episode_environment_factory}
+    else:
+        raise ValueError("environment kind must be mock or appworld")
 
     episodes = runner.run_experiment(
         control=validate_genome(config["genome"]),
         tasks=tasks,
-        environment_factory=environment_factory,
         experiment_id=config["experiment_id"],
+        **factory_options,
     )
     if sum(episode.api_calls for episode in episodes) > limits.get(
         "max_model_calls", sys.maxsize

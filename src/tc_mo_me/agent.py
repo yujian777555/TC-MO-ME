@@ -15,11 +15,12 @@ from typing import Any
 
 from tc_mo_me.environments.base import Environment, Evaluation, Observation
 from tc_mo_me.genome import Genome, WorkflowNode
-from tc_mo_me.ledger import EpisodeRecord, RunLedger
+from tc_mo_me.ledger import EpisodeRecord, ResultIndexer, RunLedger
 from tc_mo_me.model import (
     CostBasis,
     MockModelAdapter,
     ModelAdapter,
+    ModelCallError,
     ModelRequest,
     ModelResponse,
     UsageRecord,
@@ -32,6 +33,20 @@ from tc_mo_me.trajectory import Trajectory
 TaskEnvironment = Environment
 
 _EPISODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+class ResultIndexError(RuntimeError):
+    """Ledger append succeeded, but the separate non-transactional index append failed."""
+
+    def __init__(self, episode: EpisodeRecord, cause: Exception) -> None:
+        super().__init__(
+            f"ledger committed but result index append failed; "
+            f"run_status=index_failed; episode_id={episode.episode_id}: {cause}"
+        )
+        self.run_status = "index_failed"
+        self.episode = episode.model_copy(update={"run_status": self.run_status})
+        self.committed_episode = episode
+        self.ledger_committed = True
 
 
 @dataclass(frozen=True)
@@ -180,7 +195,10 @@ class AgentRunner:
             started=time.monotonic(),
         )
         if generation is not None:
-            state.usage_entries.append(_UsageEntry(generation.result.usage, "generation"))
+            generation_usage = generation.result.usage.model_copy(
+                update={"phase": "generation"}
+            )
+            state.usage_entries.append(_UsageEntry(generation_usage, "generation"))
             state.raw_steps.append({"generation": generation.result.model_dump(mode="json")})
             state.trajectory.record_score(
                 state.next_step(),
@@ -208,15 +226,31 @@ class AgentRunner:
         *,
         control: Genome,
         tasks: Sequence[TaskSpec],
-        environment_factory: Callable[[str, int], TaskEnvironment],
+        environment_factory: Callable[[str, int], TaskEnvironment] | None = None,
         generations: Sequence[GenerationAttempt] = (),
         experiment_id: str,
+        episode_environment_factory: (
+            Callable[[str, int, str, str], TaskEnvironment] | None
+        ) = None,
     ) -> list[EpisodeRecord]:
+        if (environment_factory is None) == (episode_environment_factory is None):
+            raise ValueError("provide exactly one environment factory")
         episodes: list[EpisodeRecord] = []
 
         def execute(genome: Genome, task: TaskSpec, generation: GenerationAttempt | None) -> None:
             index = len(episodes)
-            environment = environment_factory(task.task_id, task.seed)
+            episode_id = f"episode-{index:04d}"
+            if episode_environment_factory is not None:
+                environment = episode_environment_factory(
+                    task.task_id,
+                    task.seed,
+                    self.ledger.run_id,
+                    episode_id,
+                )
+            elif environment_factory is not None:
+                environment = environment_factory(task.task_id, task.seed)
+            else:
+                raise AssertionError("environment factory validation already ran")
             episodes.append(
                 self.run_episode(
                     genome=genome,
@@ -225,7 +259,7 @@ class AgentRunner:
                     task_family=task.task_family,
                     seed=task.seed,
                     experiment_id=experiment_id,
-                    episode_id=f"episode-{index:04d}",
+                    episode_id=episode_id,
                     generation=generation,
                 )
             )
@@ -526,7 +560,7 @@ class AgentRunner:
             model_id=self.model_id,
             prompt=prompt,
             system_prompt=genome.system_prompt,
-            seed=state.seed,
+            seed=state.seed if self.model.model_seed_supported else None,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             timeout_seconds=self.model_timeout_seconds,
@@ -549,35 +583,42 @@ class AgentRunner:
         try:
             response = self.model.generate(request)
         except Exception as error:
-            usage = UsageRecord(
-                model_id=self.model_id,
-                model_version=None,
-                price_id=self.price_id,
-                prompt_tokens=None,
-                completion_tokens=None,
-                total_tokens=None,
-                calls=1,
-                retries=0,
-                elapsed_seconds=0.0,
-                api_cost=None,
-                cost_basis=CostBasis.UNKNOWN,
-            )
-            state.usage_entries.append(
-                _UsageEntry(usage, "evaluation" if node.type.value == "verifier" else "generation")
-            )
+            if isinstance(error, ModelCallError):
+                usage = error.usage.model_copy(update={"phase": "evaluation"})
+                retries = error.retries
+                raw["model_call_error"] = {
+                    "attempts": error.attempts,
+                    "retries": error.retries,
+                    "elapsed_seconds": error.elapsed_seconds,
+                    "usage": usage.model_dump(mode="json"),
+                }
+            else:
+                usage = UsageRecord(
+                    model_id=self.model_id,
+                    model_version=None,
+                    price_id=self.price_id,
+                    phase="evaluation",
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                    total_tokens=None,
+                    calls=1,
+                    retries=0,
+                    elapsed_seconds=0.0,
+                    api_cost=None,
+                    cost_basis=CostBasis.UNKNOWN,
+                )
+                retries = 0
+            state.usage_entries.append(_UsageEntry(usage, "evaluation"))
             state.run_status = "model_failed"
             raw["exception"] = _exception_payload(error)
-            self._record_exception(state, error)
+            self._record_exception(state, error, retry_count=retries)
             self._write_artifacts(state)
             return None
 
+        usage = response.usage.model_copy(update={"phase": "evaluation"})
+        response = response.model_copy(update={"usage": usage})
         raw["response"] = response.model_dump(mode="json")
-        state.usage_entries.append(
-            _UsageEntry(
-                response.usage,
-                "evaluation" if node.type.value == "verifier" else "generation",
-            )
-        )
+        state.usage_entries.append(_UsageEntry(usage, "evaluation"))
         state.model_seed_supported = response.model_seed_supported
         state.trajectory.record_score(
             state.next_step(),
@@ -627,11 +668,17 @@ class AgentRunner:
         self._write_artifacts(state)
         return evaluation
 
-    def _record_exception(self, state: _EpisodeState, error: BaseException) -> None:
+    def _record_exception(
+        self,
+        state: _EpisodeState,
+        error: BaseException,
+        *,
+        retry_count: int = 0,
+    ) -> None:
         state.trajectory.record_exception(
             state.next_step(),
             error,
-            retry_count=0,
+            retry_count=retry_count,
             will_retry=False,
         )
         self._write_artifacts(state)
@@ -720,6 +767,11 @@ class AgentRunner:
         }
         episode = episode.model_copy(update={"artifact_hashes": hashes})
         self.ledger.append(episode)
+        index_path = self.ledger.run_dir.parent.parent / "index.jsonl"
+        try:
+            ResultIndexer(index_path).append(episode)
+        except Exception as error:
+            raise ResultIndexError(episode, error) from error
         return episode
 
 
@@ -877,7 +929,7 @@ class WorkflowMockAdapter(MockModelAdapter):
         if node_type == "planner":
             content = json.dumps({"plan": "Generate code, execute it, and verify the result."})
         elif node_type == "generator":
-            content = json.dumps({"code": "print('e0 deterministic mock')"})
+            content = json.dumps({"code": "pass"})
         elif node_type == "verifier":
             content = json.dumps({"action": "finish", "reason": "mock checks are complete"})
         else:
@@ -921,6 +973,7 @@ __all__ = [
     "AgentRunner",
     "GenerationAttempt",
     "MockTaskEnvironment",
+    "ResultIndexError",
     "TaskEnvironment",
     "TaskSpec",
     "WorkflowMockAdapter",
