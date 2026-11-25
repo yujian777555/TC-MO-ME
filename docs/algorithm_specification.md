@@ -190,12 +190,12 @@ O1 与 O2 的区别是变换范围，不代表二者已证明互补。O3 的实�
 
 成本“完整”的当前定义是：
 
-1. `generation_cost` 与 `evaluation_cost` 均非 null；
-2. `usage_records` 中每条记录都有非 null `api_cost`，且 `cost_basis` 不是 `unknown`。
+1. Episode 的 calls、retries、input/output tokens 和 `api_cost` 必须与 usage 明细汇总一致；任一 token/cost 未知时对应汇总必须为 null。
+2. `api_calls>0` 时必须有 usage 明细；缺 phase、未知成本或明细缺失均不能声称完整，也不能从空集合推断 `actual`。
+3. 完整记录中，`generation_cost` 与 `evaluation_cost` 分别等于对应 phase 的明细成本之和，`total_cost` 等于两阶段之和。
+4. 对确实没有模型或外部 API 的离线 Episode，只有调用方显式给出一致的零 calls、retries、tokens、各阶段成本及成本依据，才允许完整的零成本记录。
 
-完整时，模型将 `total_cost` 规范化为 `generation_cost + evaluation_cost`；若所有 usage 都是 `actual`，episode 的 `cost_basis=actual`，否则为 `estimated`，并令 `cost_complete=True`。不完整时，`total_cost=None`、`cost_complete=False`、`cost_basis=unknown`。
-
-若调用方显式提供 `total_cost`，它必须与上述派生值一致；调用方提供的非 unknown `cost_basis` 也必须符合派生状态。`api_cost` 汇总字段本身不参与完整性判定，当前模型也不会自动把它与 generation/evaluation 或 usage 总额对账。
+完整时根据明细确定 `cost_complete=True` 和成本依据；不完整时 `total_cost=None`、`cost_complete=False`、`cost_basis=unknown`。不同模型、版本、价格和 phase 的明细始终保留，不能为了得到一个总数而归并。
 
 因此：
 
@@ -216,9 +216,9 @@ O1 与 O2 的区别是变换范围，不代表二者已证明互补。O3 的实�
 
 `run_id` 必须匹配 `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`，即单个可移植路径组件。默认排他创建 run 目录与空 episodes 文件；已有目录会报错。`allow_existing=True` 可重开并读取已有 ID，防止重复追加。
 
-manifest 当前含 `schema_version=1`、`run_id`、`created_at_utc`、`episodes_file`、`episode_count` 和可空 `provenance`。每次成功 append 后更新 `episode_count`，manifest 通过同目录临时文件、flush/fsync 和 `os.replace` 原子替换。
+manifest 当前含 `schema_version=1`、`run_id`、`created_at_utc`、`episodes_file`、`episode_count` 和可空 `provenance`。每次成功 append 后更新 `episode_count`，manifest 通过同目录临时文件、flush/fsync 和 `os.replace` 原子替换。重开时以 `episodes.jsonl` 的实际记录数为事实源修正 stale count，并校验历史 Episode 与 manifest provenance 一致。
 
-追加 episode 时，先核对 `run_id` 和进程内/重开恢复的 `episode_id` 唯一性，再以 JSONL 追加一行并 flush/fsync；重复 ID 抛出 `DuplicateEpisodeError`，不改写历史。锁是 `threading.Lock`，当前实现不承诺多进程或分布式写安全。结果索引也有独立 append 接口，不能与 ledger 的唯一性保证混为一谈。
+追加 episode 时，先核对 `run_id`、Episode 与 run provenance 的 `git_sha/config_hash`，再检查进程内/重开恢复的 `episode_id` 唯一性，以 JSONL 追加一行并 flush/fsync；重复 ID 抛出 `DuplicateEpisodeError`，不改写历史。重开时新传入的 provenance 必须与 manifest 的身份字段一致，捕获时间可以不同。锁是 `threading.Lock`，当前实现不承诺多进程或分布式写安全。结果索引也有独立 append 接口，不能与 ledger 的唯一性保证混为一谈。
 
 ### 9.2 ResultIndexer
 
