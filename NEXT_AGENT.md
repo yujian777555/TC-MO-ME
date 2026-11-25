@@ -9,9 +9,9 @@
 - 仓库：`https://github.com/yujian777555/TC-MO-ME`
 - 分支：`experiment/e0-bootstrap`；不得直接推 main。
 - main 起始 SHA：`a73bc1abcdd0d73e084b615fe9046fa38ded59a5`
-- 最终代码验收 SHA：`fc34fc8`；接管时必须以 `git rev-parse HEAD` 和 PR 最新提交为准。
+- 最终代码验收 SHA：`d12c414`；接管时必须以 `git rev-parse HEAD` 和 PR 最新提交为准。
 - 草稿 PR：https://github.com/yujian777555/TC-MO-ME/pull/1
-- 当前 `383 passed`、Ruff 通过；最终 CI 以 PR 最新 run 为准。
+- 当前 `385 passed`、Ruff 通过；最终 CI 以 PR 最新 run 为准。
 
 ## 首先完成的工作
 
@@ -31,7 +31,7 @@ uv build
 
 AppWorld 固定 `42b5bcf3cd334fee33f0c37c02070a9f5807add5`、数据 `0.2.0`。Git LFS payload、兼容约束和官方 tests/三任务命令见 `docs/installation_and_runs.md`。本机真实运行使用 Ubuntu WSL；Windows/WSL 共享工作区需要 `git config --local core.autocrlf true` 对齐换行判定，不能用 `--allow-dirty` 绕过正式 provenance。
 
-自研 Agent AppWorld Mock 的完整 WSL 命令和 E1 v1/v2 结果见 `docs/installation_and_runs.md`。需要重跑 E1 v2 时可使用以下命令，但必须先换用从未存在的新 run_id，不能覆盖已验收的 v2：
+自研 Agent AppWorld Mock 的完整 WSL 命令和 E1 v1/v2/v3 结果见 `docs/installation_and_runs.md`。需要重跑当前 E1 Mock 协议时可使用以下命令，但必须先换用从未存在的新 run_id，不能覆盖已验收的 v3：
 
 ```bash
 uv run --no-sync python -c 'from collections import Counter; from pathlib import Path; from tc_mo_me.e1_mock import run_e1_mock; root=Path.cwd(); r=run_e1_mock(root/"configs/e1/mock_dry_run.yaml", root, "results"); print(len(r.episodes), len(r.pre_child_states), len(r.events), Counter(e.run_status for e in r.episodes))'

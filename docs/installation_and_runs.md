@@ -210,3 +210,9 @@ v1 的 112 条记录及 8 个失败保持不变，v2 使用独立原始目录 `r
 E1 使用新 run_id `e1-mock-dry-run-v3`、干净 SHA `243880c1a4c2613a85301b165a41031d4d55bc08` 正式执行：112/112 succeeded，O3 16/16，364 Mock calls，全部成本完整且为 `0 USD`。176 个事件严格分为 64 `parent_evaluated`、16 `pre_child_state_serialized`、48 `child_generated` 和 48 `child_evaluated`；全成功运行没有 `child_finalized`。逐条 lineage 复核仍确认 16 个 O3 child 均使用四父代且不是父代复制。
 
 `child_finalized` 仅用于未实际评价的 generation_failed 终态；v1 中的旧式 `child_evaluated` 终止包装只作 legacy 解释，原始 raw 不回写。v1/v2/v3 原始目录均保留，公开索引累计 342 条唯一元数据。上述运行仍不构成真实 E1 或算子效果证据。
+
+## 重试遥测最终回归
+
+`ModelAdapter` 增加 attempt 进度回调，AgentRunner 在同一 pending evaluation usage 上更新已观察重试并写 checkpoint；成功或 `ModelCallError` 仍以实际明细替换。真实 spawn 回归覆盖“首次可重试 TimeoutError、第二次挂起并硬超时”，结果为 `api_calls=1`、`retry_count>=1`、token/`api_cost=None`、`cost_complete=False`，账本和公开索引各恰好一条。硬超时的 retry 数明确标为 `observed_lower_bound`，不虚构精确次数。
+
+最终干净隔离环境为 `385 passed`，Ruff 和 wheel 构建通过。内部自动复核此前确认 4 个 Important 和 2 个 Minor 全部解决；该复核不构成独立人工批准。
