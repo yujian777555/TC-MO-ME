@@ -82,7 +82,7 @@ class EpisodeBudget(StrictModel):
 
 class E1Config(StrictModel):
     experiment_id: Literal["e1_operator_heterogeneity_pilot"]
-    protocol_version: Literal["1.0"]
+    protocol_version: Literal["1.1"]
     analysis_status: Literal["not_run"]
     train_role: Literal["pilot"]
     dev_role: Literal["reserved_independent_validation"]
@@ -391,17 +391,13 @@ def _child_episode(
     elif operator_id == "O2":
         operation = O2_OPERATIONS[block_index % 4]
     else:
-        donor_one = (block_index + 1) % 4
-        donor_two = (block_index + 2) % 4
-        parent_indices = [primary, donor_one, donor_two]
-        donor_indices = [donor_one, donor_two]
-        sources = {
-            "system_prompt": primary_id,
-            "planning_policy": GENOME_IDS[donor_one],
-            "code_generation_policy": GENOME_IDS[donor_two],
-            "verification_policy": GENOME_IDS[donor_two],
-            "workflow_graph": GENOME_IDS[donor_one],
-        }
+        parent_indices = [(block_index + offset) % 4 for offset in range(4)]
+        donor_indices = parent_indices[1:]
+        if primary in (0, 3):
+            sources["planning_policy"] = "g1_planner"
+            sources["verification_policy"] = "g2_verifier"
+        else:
+            sources["workflow_graph"] = "g3_workflow"
     return EpisodePlan(
         episode_id=f"e1-b{block_index:02d}-{operator_id.lower()}",
         block_index=block_index,

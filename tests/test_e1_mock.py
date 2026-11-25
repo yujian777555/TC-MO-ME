@@ -9,27 +9,30 @@ import yaml
 import tc_mo_me.e1_mock as e1_mock
 from tc_mo_me.e1_mock import generate_child, load_mock_config, run_e1_mock
 from tc_mo_me.e1_protocol import (
+    GENOME_IDS,
     OfficialTestResult,
     ParentEpisodeStateInput,
     build_plan_from_file,
     build_pre_child_state,
     validate_pre_child_state,
 )
-from tc_mo_me.genome import CONTENT_COMPONENTS, validate_genome
+from tc_mo_me.genome import CONTENT_COMPONENTS, genome_hash, validate_genome
 from tc_mo_me.ledger import RunLedger
 from tc_mo_me.model import MockModelAdapter
 
 ROOT = Path(__file__).parents[1]
 MOCK_CONFIG = ROOT / "configs" / "e1" / "mock_dry_run.yaml"
 PILOT_CONFIG = ROOT / "configs" / "e1" / "pilot.yaml"
+V1_O3_NO_CHANGE_BLOCKS = frozenset({2, 3, 6, 7, 10, 11, 14, 15})
 
 
 def test_mock_config_freezes_full_pilot_and_explicit_zero_cost() -> None:
     config = load_mock_config(MOCK_CONFIG)
     plan = build_plan_from_file(PILOT_CONFIG, repo_root=ROOT)
 
-    assert config.run_id == "e1-mock-dry-run-v1"
+    assert config.run_id == "e1-mock-dry-run-v2"
     assert config.experiment_id == "e1-mock-dry-run"
+    assert plan.config.protocol_version == "1.1"
     assert config.source_protocol.config_path == "configs/e1/pilot.yaml"
     assert config.source_protocol.config_sha256 == plan.config_sha256
     assert config.source_protocol.plan_sha256 == plan.plan_sha256
@@ -162,6 +165,38 @@ def test_o3_mock_recombines_plan_sources_deterministically() -> None:
     assert {genome_id: genome.model_dump(mode="json") for genome_id, genome in parents.items()} == before
 
 
+def o3_block_label(block_index: int) -> str:
+    suffix = "-v1-structural-no-change" if block_index in V1_O3_NO_CHANGE_BLOCKS else ""
+    return f"b{block_index:02d}{suffix}"
+
+
+@pytest.mark.parametrize("block_index", range(16), ids=o3_block_label)
+def test_o3_v2_child_hash_is_novel_for_all_four_parents(block_index: int) -> None:
+    config = load_mock_config(MOCK_CONFIG)
+    episode = child_for(block_index, "O3")
+    parents = initial_genomes()
+    expected_parent_ids = tuple(GENOME_IDS[index] for index in episode.parent_indices)
+
+    attempt = generate_child(episode, parents, model_config=config.model)
+
+    assert attempt.result.success is True, attempt.result.error
+    assert episode.parent_indices == [
+        block_index % 4,
+        (block_index + 1) % 4,
+        (block_index + 2) % 4,
+        (block_index + 3) % 4,
+    ]
+    assert set(episode.parent_indices) == {0, 1, 2, 3}
+    assert attempt.parent_ids == expected_parent_ids
+    child = attempt.result.child
+    assert child is not None
+    parent_hashes = {genome_hash(parents[parent_id]) for parent_id in expected_parent_ids}
+    assert genome_hash(child) not in parent_hashes
+    assert attempt.result.lineage is not None
+    assert attempt.result.lineage.parent_ids == list(expected_parent_ids)
+    assert attempt.result.lineage.primary_parent_id == GENOME_IDS[block_index % 4]
+
+
 def small_config(tmp_path: Path, *, blocks: int = 1) -> Path:
     payload = yaml.safe_load(MOCK_CONFIG.read_text(encoding="utf-8"))
     payload["limits"] = {"max_blocks": blocks, "max_episodes": blocks * 7}
@@ -248,7 +283,7 @@ def test_single_block_commits_parents_then_state_then_each_child(tmp_path: Path)
 
 
 def config_run_id() -> str:
-    return "e1-mock-dry-run-v1"
+    return "e1-mock-dry-run-v2"
 
 
 def test_generation_failure_is_committed_and_does_not_skip_later_children(

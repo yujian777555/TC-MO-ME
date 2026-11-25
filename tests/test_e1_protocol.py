@@ -15,6 +15,36 @@ O1_COMPONENTS = (
     "verification_policy",
 )
 O2_OPERATIONS = ("insert", "delete", "replace", "reorder")
+O3_COMPOSITIONS = (
+    {
+        "system_prompt": 0,
+        "planning_policy": 1,
+        "code_generation_policy": 0,
+        "verification_policy": 2,
+        "workflow_graph": 0,
+    },
+    {
+        "system_prompt": 1,
+        "planning_policy": 1,
+        "code_generation_policy": 1,
+        "verification_policy": 1,
+        "workflow_graph": 3,
+    },
+    {
+        "system_prompt": 2,
+        "planning_policy": 2,
+        "code_generation_policy": 2,
+        "verification_policy": 2,
+        "workflow_graph": 3,
+    },
+    {
+        "system_prompt": 3,
+        "planning_policy": 1,
+        "code_generation_policy": 3,
+        "verification_policy": 2,
+        "workflow_graph": 3,
+    },
+)
 
 
 def load_api():
@@ -68,7 +98,11 @@ def test_parent_and_donor_indices_are_balanced_across_blocks():
         ]
         assert [episode.primary_parent_index for episode in children] == [block_index % 4] * 3
         o3 = children[2]
-        assert o3.donor_indices == [(block_index + 1) % 4, (block_index + 2) % 4]
+        assert o3.donor_indices == [
+            (block_index + 1) % 4,
+            (block_index + 2) % 4,
+            (block_index + 3) % 4,
+        ]
 
     children = [episode for episode in plan.episodes if episode.role == "child"]
     assert Counter(episode.primary_parent_index for episode in children) == {
@@ -79,10 +113,10 @@ def test_parent_and_donor_indices_are_balanced_across_blocks():
     }
     o3_episodes = [episode for episode in children if episode.operator_id == "O3"]
     assert Counter(index for episode in o3_episodes for index in episode.donor_indices) == {
-        0: 8,
-        1: 8,
-        2: 8,
-        3: 8,
+        0: 12,
+        1: 12,
+        2: 12,
+        3: 12,
     }
 
 
@@ -94,6 +128,7 @@ def test_operator_specs_and_component_sources_are_frozen_per_block():
         primary = b % 4
         donor_one = (b + 1) % 4
         donor_two = (b + 2) % 4
+        donor_three = (b + 3) % 4
         children = [
             next(episode for episode in plan.episodes if episode.episode_id == episode_id)
             for episode_id in block.child_episode_ids
@@ -108,7 +143,7 @@ def test_operator_specs_and_component_sources_are_frozen_per_block():
         assert o2.parent_indices == [primary]
         assert o3.target_component is None
         assert o3.operation is None
-        assert o3.parent_indices == [primary, donor_one, donor_two]
+        assert o3.parent_indices == [primary, donor_one, donor_two, donor_three]
         primary_id = GENOME_IDS[primary]
         assert o1.component_sources == {
             component: primary_id
@@ -116,11 +151,8 @@ def test_operator_specs_and_component_sources_are_frozen_per_block():
         }
         assert o2.component_sources == o1.component_sources
         assert o3.component_sources == {
-            "system_prompt": primary_id,
-            "planning_policy": GENOME_IDS[donor_one],
-            "code_generation_policy": GENOME_IDS[donor_two],
-            "verification_policy": GENOME_IDS[donor_two],
-            "workflow_graph": GENOME_IDS[donor_one],
+            component: GENOME_IDS[source_index]
+            for component, source_index in O3_COMPOSITIONS[primary].items()
         }
 
 

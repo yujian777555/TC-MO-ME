@@ -1,11 +1,11 @@
 schema_version: 1
 enabled: true
-run_id: e1-mock-dry-run-v1
+run_id: e1-mock-dry-run-v2
 experiment_id: e1-mock-dry-run
 source_protocol:
   config_path: configs/e1/pilot.yaml
-  config_sha256: f75ac2e3e499a38ebf69db0873804e9148e71e369ee0fd8ad60b305b2206678a
-  plan_sha256: 8a4470d6ff5f382feed5050fb6a14220797a83ae09c81d9b33690ad47cdf2bb5
+  config_sha256: 01388a4022e5ab3ad530be9c12e5cd2449c860bba3e8e4d0f88569fd72bbf79b
+  plan_sha256: 7dc3253f4102ac0a1d2fe179e8cb0042865f4995f96e4a5dec6885d5dd40b1e0
 model:
   adapter: mock
   model_id: e1-deterministic-mock

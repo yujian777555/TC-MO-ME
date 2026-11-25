@@ -119,7 +119,7 @@ class MockProvenanceConfig(_StrictModel):
 class E1MockConfig(_StrictModel):
     schema_version: Literal[1]
     enabled: Literal[True]
-    run_id: Literal["e1-mock-dry-run-v1"]
+    run_id: Literal["e1-mock-dry-run-v2"]
     experiment_id: Literal["e1-mock-dry-run"]
     source_protocol: SourceProtocolConfig
     model: MockModelConfig
