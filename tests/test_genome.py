@@ -302,6 +302,16 @@ def test_invalid_lineage_records_are_rejected(api, overrides, match):
         api.LineageRecord(**data)
 
 
+@pytest.mark.parametrize("blank_id", ["", " ", "\t\n"])
+@pytest.mark.parametrize("field", ["parent_ids", "primary_parent_id", "child_id"])
+def test_lineage_ids_must_be_non_empty_and_non_blank(api, field, blank_id):
+    value = [blank_id] if field == "parent_ids" else blank_id
+    data = lineage_data(api, **{field: value})
+
+    with pytest.raises(ValueError, match="non-empty and non-blank"):
+        api.LineageRecord(**data)
+
+
 def load_initial_genomes(api):
     config_dir = Path(__file__).parents[1] / "configs" / "e1" / "genomes"
     genomes = {}

@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -187,4 +188,66 @@ def test_reset_refuses_to_overwrite_existing_task_output(tmp_path: Path) -> None
         environment.reset("task-1")
 
     assert sentinel.read_text(encoding="utf-8") == "original"
+    assert factory.calls == []
+
+
+INVALID_PATH_COMPONENTS = (
+    "",
+    " ",
+    ".",
+    "..",
+    "../escape",
+    "nested/task",
+    "nested\\task",
+    "/absolute",
+    "C:\\absolute",
+    "C:relative",
+    "\\\\server\\share\\run",
+)
+
+
+@pytest.mark.parametrize("experiment_name", INVALID_PATH_COMPONENTS)
+def test_experiment_name_must_be_a_portable_path_component(
+    tmp_path: Path, experiment_name: str
+) -> None:
+    with pytest.raises(ValueError, match="experiment_name"):
+        AppWorldEnvironment(
+            root=tmp_path,
+            experiment_name=experiment_name,
+            world_factory=WorldFactory(),
+        )
+
+
+@pytest.mark.parametrize("task_id", INVALID_PATH_COMPONENTS)
+def test_task_id_must_be_a_portable_path_component(tmp_path: Path, task_id: str) -> None:
+    factory = WorldFactory()
+    environment = AppWorldEnvironment(root=tmp_path, experiment_name="run", world_factory=factory)
+
+    with pytest.raises(ValueError, match="task_id"):
+        environment.reset(task_id)
+
+    assert environment.output_directory is None
+    assert factory.calls == []
+
+
+def test_reset_rejects_resolved_output_outside_the_tasks_root(tmp_path: Path) -> None:
+    tasks_root = tmp_path / "experiments" / "outputs" / "run" / "tasks"
+    tasks_root.mkdir(parents=True)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    task_link = tasks_root / "task-1"
+    if sys.platform == "win32":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(task_link), str(outside)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        task_link.symlink_to(outside, target_is_directory=True)
+    factory = WorldFactory()
+    environment = AppWorldEnvironment(root=tmp_path, experiment_name="run", world_factory=factory)
+
+    with pytest.raises(ValueError, match="within"):
+        environment.reset("task-1")
+
     assert factory.calls == []

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from tc_mo_me.model import UsageRecord
 
@@ -161,8 +161,8 @@ def genome_hash(genome: Genome | Mapping[str, Any] | str | bytes) -> str:
 class LineageRecord(StrictModel):
     operator_id: str = Field(min_length=1)
     parent_ids: list[str] = Field(min_length=1)
-    primary_parent_id: str = Field(min_length=1)
-    child_id: str = Field(min_length=1)
+    primary_parent_id: str
+    child_id: str
     modified_paths: list[str] = Field(min_length=1)
     component_sources: dict[str, str]
     parent_hashes: dict[str, str]
@@ -170,6 +170,14 @@ class LineageRecord(StrictModel):
     generation: int = Field(ge=1)
     usage: UsageRecord
     created_at_utc: datetime
+
+    @field_validator("parent_ids", "primary_parent_id", "child_id")
+    @classmethod
+    def validate_non_blank_ids(cls, value: str | list[str]) -> str | list[str]:
+        values = [value] if isinstance(value, str) else value
+        if any(not item.strip() for item in values):
+            raise ValueError("lineage IDs must be non-empty and non-blank")
+        return value
 
     @model_validator(mode="after")
     def validate_lineage(self) -> LineageRecord:

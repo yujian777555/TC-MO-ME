@@ -85,9 +85,13 @@ _SENSITIVE_KEYS = {
     "secret",
     "token",
 }
+_SENSITIVE_KEY_PATTERN = "|".join(
+    r"[_-]?".join(re.escape(part) for part in key.split("_"))
+    for key in sorted(_SENSITIVE_KEYS, key=len, reverse=True)
+)
 _SECRET_ASSIGNMENT = re.compile(
-    r"(\b(?:api[_-]?key|access[_-]?key|auth[_-]?token|authorization|password|secret|token)"
-    r"\b\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+    rf"((?<![\w-])(?:{_SENSITIVE_KEY_PATTERN})\b[\"']?\s*[:=]\s*)"
+    r"(\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
     re.IGNORECASE,
 )
 _BEARER_TOKEN = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
