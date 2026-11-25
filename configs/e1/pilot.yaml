@@ -1,0 +1,61 @@
+experiment_id: e1_operator_heterogeneity_pilot
+protocol_version: "1.0"
+analysis_status: not_run
+train_role: pilot
+dev_role: reserved_independent_validation
+environment_seeds: [100, 200]
+genomes_directory: configs/e1/genomes
+model:
+  model_id: e1-pilot-model-unpinned
+  model_version: null
+  seed_policy: same_as_environment_seed
+  temperature: 0.0
+budget:
+  max_model_calls_per_episode: 8
+  max_input_tokens_per_episode: 32768
+  max_output_tokens_per_episode: 8192
+  timeout_seconds_per_episode: 600
+  max_retries_per_call: 2
+selection:
+  dataset_split: train
+  selection_seed: 20261124
+  task_family_rule: task_id_prefix_before_final_underscore
+  task_type_rule: required_apps_cardinality_single_1_multi_greater_than_1
+  stratum_rule: exact_sorted_required_apps_set
+  strata_ranking_rule: descending_task_count_then_app_set_lexicographic
+  strata_per_task_type: 4
+  within_stratum_rule: minimum_sha256_of_selection_seed_colon_task_id_then_task_id
+  fold_rule: within_task_type_sort_task_id_then_alternate_A_B
+  metadata_hash_rule: sha256_canonical_json_of_specs_and_required_apps
+  train_list_sha256: 93d9fe71e7a2e3b7529803d4a20b604f4ebf5ae806f321081140238068189d37
+  selection_manifest_sha256: 843050c50962dbbc42f8a827bd15e3e434019d26b2f4157937123e3ce48051ee
+initial_genome_hashes:
+  g0_baseline: b201f8e5d53aefd06e416a3fc81dea4bef1bc32bc59452bf7b5e2404e88f5613
+  g1_planner: b834b274ea07e77e0c82cac7dc0e0d4f9bbdb9e4811d246111ffb369739ca6e6
+  g2_verifier: e22c54b12d7528fbe8b7b13e316aa569560452fd71e0ae5850185ad32b553b4c
+  g3_workflow: c28ea0f9563aec42cd27e98193c3cc20abd2cf83699ad04c883a6825d8eef78b
+tasks:
+  - task_id: 82e2fac_1
+    task_family: 82e2fac
+    metadata_sha256: c80fda72811069ae808150a95e27c0dd8d5c18ca6c98615af707d686e9da8fe5
+  - task_id: 76f2c72_1
+    task_family: 76f2c72
+    metadata_sha256: c37ecbfe6c20f7372de716d0189cc3cb85e603ec71418ea5c7578c1509867015
+  - task_id: 771d8fc_2
+    task_family: 771d8fc
+    metadata_sha256: 9eb93e157ceafaec1cad5fc1d5f6c64d12320ffff21dc28ab0eb6c1a61bfc533
+  - task_id: cf6abd2_2
+    task_family: cf6abd2
+    metadata_sha256: e98bc9eddbe6af7c252baeb580d404270e89aa62a74c80ba1ef70acc845fd5bd
+  - task_id: 6ea6792_2
+    task_family: 6ea6792
+    metadata_sha256: b5d89c44050a1f2f236ac9ab24206adda1d0feab394287e28d1e45123a5ce510
+  - task_id: 3c13f5a_2
+    task_family: 3c13f5a
+    metadata_sha256: d81310ded11d4b4915b7771cb298d930496d453adb1571a45a844cace4b79498
+  - task_id: "6104387_1"
+    task_family: "6104387"
+    metadata_sha256: 46a3bb55b3f88be681f2b979fc3746180db3f38b6709d19a616c4b84532921da
+  - task_id: 29caf6f_3
+    task_family: 29caf6f
+    metadata_sha256: 01a87c14dd4ec5ae26f0aef975d192b23019f82aab492dc3a94c230815d48b6e
