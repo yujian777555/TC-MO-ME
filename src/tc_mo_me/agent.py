@@ -211,8 +211,8 @@ class AgentRunner:
             )
             if not generation.result.success:
                 state.run_status = "generation_failed"
-                environment.close()
-                state.cleanup = "closed"
+                state.raw_steps.append({"termination": "generation_failed"})
+                self._close_environment(environment, state, preserve_status=True)
                 episode = self._build_record(state)
                 return self._commit(state, episode)
         if self.process_isolation:
@@ -309,10 +309,35 @@ class AgentRunner:
         process.start()
         sender.close()
         final_episode: EpisodeRecord | None = None
+
+        def fail_worker(error: BaseException) -> EpisodeRecord:
+            latest.run_status = "runner_failed"
+            latest.cleanup = "process_exited"
+            latest.trajectory.record_score(
+                latest.next_step(),
+                None,
+                details={"event": "termination", "reason": "process_exited"},
+            )
+            latest.raw_steps.append(
+                {
+                    "worker_exception": {
+                        **_exception_payload(error),
+                        "process_exitcode": process.exitcode,
+                    },
+                    "environment_cleanup": "process_exited",
+                }
+            )
+            return self._build_record(latest)
+
         try:
             while final_episode is None:
-                if receiver.poll(0.05):
-                    message = receiver.recv()
+                try:
+                    has_message = receiver.poll(0.05)
+                    message = receiver.recv() if has_message else None
+                except (EOFError, BrokenPipeError, OSError) as error:
+                    final_episode = fail_worker(error)
+                    break
+                if message is not None:
                     if message["kind"] == "ready":
                         if self.timeout_seconds is not None:
                             deadline = time.monotonic() + self.timeout_seconds
@@ -350,16 +375,19 @@ class AgentRunner:
                     )
                     final_episode = self._build_record(latest)
                     break
-                if not process.is_alive() and not receiver.poll():
-                    latest.run_status = "runner_failed"
-                    latest.cleanup = "process_exited"
-                    latest.raw_steps.append(
-                        {"worker_exception": {"type": "ProcessExited", "message": "worker exited"}}
-                    )
-                    final_episode = self._build_record(latest)
+                if not process.is_alive():
+                    process.join(timeout=0)
+                    try:
+                        if receiver.poll(0.1):
+                            continue
+                    except (EOFError, BrokenPipeError, OSError) as error:
+                        final_episode = fail_worker(error)
+                    else:
+                        final_episode = fail_worker(RuntimeError("worker exited without a final record"))
+                    break
         finally:
             receiver.close()
-            process.join(timeout=0.1)
+            _reap_worker(process)
         return self._commit(latest, final_episode)
 
     def _execute_local(
@@ -380,16 +408,26 @@ class AgentRunner:
             else:
                 state.raw_steps.append({"runner_exception": _exception_payload(error)})
         finally:
-            try:
-                environment.close()
-            except Exception as error:
-                state.cleanup = "close_failed"
-                state.run_status = "environment_close_failed"
-                self._record_exception(state, error)
-                state.raw_steps.append({"close_exception": _exception_payload(error)})
-            else:
-                state.cleanup = "closed"
+            self._close_environment(environment, state)
         self._write_artifacts(state)
+
+    def _close_environment(
+        self,
+        environment: TaskEnvironment,
+        state: _EpisodeState,
+        *,
+        preserve_status: bool = False,
+    ) -> None:
+        try:
+            environment.close()
+        except Exception as error:
+            state.cleanup = "close_failed"
+            if not preserve_status:
+                state.run_status = "environment_close_failed"
+            self._record_exception(state, error)
+            state.raw_steps.append({"close_exception": _exception_payload(error)})
+        else:
+            state.cleanup = "closed"
 
     def _execute_graph(
         self,
@@ -568,6 +606,27 @@ class AgentRunner:
             price_id=self.price_id,
         )
         raw["request"] = request.model_dump(mode="json")
+        pending_entry = _UsageEntry(
+            UsageRecord(
+                model_id=self.model_id,
+                model_version=None,
+                price_id=(
+                    self.price_id if self.price_id is not None else self.model.price_id
+                ),
+                phase="evaluation",
+                prompt_tokens=None,
+                completion_tokens=None,
+                total_tokens=None,
+                calls=1,
+                retries=0,
+                elapsed_seconds=0.0,
+                api_cost=None,
+                cost_basis=CostBasis.UNKNOWN,
+            ),
+            "evaluation",
+        )
+        state.usage_entries.append(pending_entry)
+        raw["pending_usage"] = pending_entry.usage.model_dump(mode="json")
         state.prompt_hashes.append(request.prompt_hash)
         state.trajectory.record_score(
             state.next_step(),
@@ -596,7 +655,9 @@ class AgentRunner:
                 usage = UsageRecord(
                     model_id=self.model_id,
                     model_version=None,
-                    price_id=self.price_id,
+                    price_id=(
+                        self.price_id if self.price_id is not None else self.model.price_id
+                    ),
                     phase="evaluation",
                     prompt_tokens=None,
                     completion_tokens=None,
@@ -608,7 +669,8 @@ class AgentRunner:
                     cost_basis=CostBasis.UNKNOWN,
                 )
                 retries = 0
-            state.usage_entries.append(_UsageEntry(usage, "evaluation"))
+            pending_entry.usage = usage
+            pending_entry.phase = "evaluation"
             state.run_status = "model_failed"
             raw["exception"] = _exception_payload(error)
             self._record_exception(state, error, retry_count=retries)
@@ -618,7 +680,8 @@ class AgentRunner:
         usage = response.usage.model_copy(update={"phase": "evaluation"})
         response = response.model_copy(update={"usage": usage})
         raw["response"] = response.model_dump(mode="json")
-        state.usage_entries.append(_UsageEntry(usage, "evaluation"))
+        pending_entry.usage = usage
+        pending_entry.phase = "evaluation"
         state.model_seed_supported = response.model_seed_supported
         state.trajectory.record_score(
             state.next_step(),
@@ -773,6 +836,15 @@ class AgentRunner:
         except Exception as error:
             raise ResultIndexError(episode, error) from error
         return episode
+
+
+def _reap_worker(process: multiprocessing.Process) -> None:
+    if process.is_alive():
+        process.terminate()
+    process.join(timeout=2)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=2)
 
 
 def _state_snapshot(state: _EpisodeState) -> _EpisodeState:

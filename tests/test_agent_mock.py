@@ -826,3 +826,186 @@ def test_index_failure_is_explicit_after_nontransactional_ledger_commit(
     assert error.ledger_committed is True
     assert ledger.read_episodes() == [error.committed_episode]
     assert not (tmp_path / "results" / "index.jsonl").exists()
+
+
+class OsExitEnvironment(FakeEnvironment):
+    def reset(self, task_id: str):
+        import os
+
+        os._exit(23)
+
+
+def test_worker_os_exit_is_reaped_and_committed_exactly_once(tmp_path: Path) -> None:
+    import multiprocessing
+
+    ledger = RunLedger(tmp_path / "results", "os-exit-run", provenance=provenance())
+    runner = AgentRunner(
+        model=QueuedModel(*successful_responses()),
+        model_id="mock-model",
+        ledger=ledger,
+        provenance=provenance(),
+        process_isolation=True,
+        timeout_seconds=10,
+    )
+
+    episode = runner.run_episode(
+        genome=make_genome(),
+        environment=OsExitEnvironment(),
+        task_id="task-1",
+        task_family="mock",
+        seed=7,
+        experiment_id="experiment-1",
+        episode_id="os-exit-episode",
+    )
+
+    assert episode.run_status == "runner_failed"
+    assert episode.task_score is None
+    assert ledger.read_episodes() == [episode]
+    index_entries = [
+        json.loads(line)
+        for line in (tmp_path / "results" / "index.jsonl").read_text().splitlines()
+    ]
+    assert len(index_entries) == 1
+    assert index_entries[0]["episode_id"] == "os-exit-episode"
+    assert index_entries[0]["run_status"] == "runner_failed"
+    private = artifact(ledger, episode.episode_id, "private_steps.jsonl").read_text()
+    trajectory = artifact(ledger, episode.episode_id, "trajectory.jsonl").read_text()
+    assert "process_exited" in private
+    assert "process_exited" in trajectory
+    assert not multiprocessing.active_children()
+
+
+class HangingModel(ModelAdapter):
+    def __init__(self) -> None:
+        super().__init__(
+            max_retries=0,
+            model_seed_supported=True,
+            price_id="hanging-price-v1",
+        )
+
+    def _generate_once(self, request, timeout_seconds):
+        import time
+
+        time.sleep(30)
+        raise AssertionError("unreachable after hard timeout")
+
+
+def test_hanging_model_timeout_preserves_pending_unknown_evaluation_usage(
+    tmp_path: Path,
+) -> None:
+    import time
+
+    ledger = RunLedger(tmp_path / "results", "model-hang-run", provenance=provenance())
+    runner = AgentRunner(
+        model=HangingModel(),
+        model_id="mock-model",
+        ledger=ledger,
+        provenance=provenance(),
+        process_isolation=True,
+        timeout_seconds=0.5,
+    )
+    started = time.monotonic()
+
+    episode = runner.run_episode(
+        genome=make_genome(),
+        environment=FakeEnvironment(),
+        task_id="task-1",
+        task_family="mock",
+        seed=7,
+        experiment_id="experiment-1",
+        episode_id="model-hang-episode",
+    )
+
+    assert time.monotonic() - started < 8
+    assert episode.run_status == "timeout"
+    assert episode.api_calls == 1
+    assert episode.retry_count == 0
+    assert episode.input_tokens is None
+    assert episode.output_tokens is None
+    assert episode.api_cost is None
+    assert episode.total_cost is None
+    assert episode.evaluation_cost is None
+    assert episode.generation_cost == 0
+    assert episode.cost_complete is False
+    assert episode.cost_basis is CostBasis.UNKNOWN
+    assert len(episode.usage_records) == 1
+    usage = episode.usage_records[0]
+    assert usage.phase == "evaluation"
+    assert usage.calls == 1
+    assert usage.retries == 0
+    assert usage.prompt_tokens is None
+    assert usage.completion_tokens is None
+    assert usage.total_tokens is None
+    assert usage.api_cost is None
+    assert usage.price_id == "hanging-price-v1"
+    assert ledger.read_episodes() == [episode]
+    assert len((tmp_path / "results" / "index.jsonl").read_text().splitlines()) == 1
+    private = artifact(ledger, episode.episode_id, "private_steps.jsonl").read_text()
+    assert "pending_usage" in private
+    assert "process_terminated" in private
+
+
+class CloseFailingEnvironment(FakeEnvironment):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.closed = True
+        raise RuntimeError("deterministic close failure")
+
+
+def test_generation_failure_with_close_failure_still_commits_once(tmp_path: Path) -> None:
+    failed = O1LocalOperator().generate(
+        make_genome(),
+        MutationSpec(component="system_prompt"),
+        OperatorContext(
+            model=QueuedModel("not-json"),
+            model_id="mock-model",
+            child_id="uncreated-child",
+        ),
+    )
+    assert not failed.success
+    runner, ledger = make_runner(tmp_path, QueuedModel(*successful_responses()))
+    environment = CloseFailingEnvironment()
+
+    episode = runner.run_episode(
+        genome=make_genome(),
+        environment=environment,
+        task_id="task-1",
+        task_family="mock",
+        seed=7,
+        experiment_id="experiment-1",
+        episode_id="generation-close-failure",
+        generation=GenerationAttempt(
+            result=failed,
+            operator_id="O1",
+            parent_ids=("control",),
+            primary_parent_id="control",
+        ),
+    )
+
+    assert episode.run_status == "generation_failed"
+    assert episode.task_score is None
+    assert episode.api_calls == 1
+    assert episode.api_cost == failed.usage.api_cost
+    assert episode.generation_cost == failed.usage.api_cost
+    assert episode.evaluation_cost == 0
+    assert episode.total_cost == failed.usage.api_cost
+    assert [usage.phase for usage in episode.usage_records] == ["generation"]
+    assert environment.close_calls == 1
+    assert environment.reset_calls == []
+    assert ledger.read_episodes() == [episode]
+    index_entries = [
+        json.loads(line)
+        for line in (tmp_path / "results" / "index.jsonl").read_text().splitlines()
+    ]
+    assert len(index_entries) == 1
+    assert index_entries[0]["run_status"] == "generation_failed"
+    private = artifact(ledger, episode.episode_id, "private_steps.jsonl").read_text()
+    trajectory = artifact(ledger, episode.episode_id, "trajectory.jsonl").read_text()
+    assert "close_exception" in private
+    assert "deterministic close failure" in private
+    assert "deterministic close failure" in trajectory
+    assert "generation_failed" in private
